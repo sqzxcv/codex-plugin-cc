@@ -86,7 +86,7 @@ Then restart Gemini and use:
 /codex:result
 ```
 
-These Gemini commands shell into the same local `plugins/codex/scripts/codex-companion.mjs` runtime used by the Claude Code plugin, so they still require a working local Codex CLI login.
+These Gemini commands are intercepted by an extension `BeforeModel` hook before Gemini starts its own workflow. The hook dispatches to the same local `plugins/codex/scripts/codex-companion.mjs` runtime used by the Claude Code plugin and injects Codex's stdout back into the chat, so they still require a working local Codex CLI login.
 
 ## Usage
 

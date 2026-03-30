@@ -1,6 +1,9 @@
 description = "Cancel a local Codex background run for the current workspace and return the output verbatim."
 prompt = """
-Run the local Codex cancel command for the current workspace and return its stdout verbatim with no additional commentary.
+Use the MCP tool `codex_cancel` exactly once.
 
-!{node "${extensionPath}${/}plugins${/}codex${/}scripts${/}gemini-command.mjs" cancel "${workspacePath}" {{args}}}
+Pass `raw_args` as the exact argument text from this slash command: `{{args}}`.
+
+After the tool returns, reply with the tool output verbatim and nothing else.
+Do not use `run_shell_command`.
 """
