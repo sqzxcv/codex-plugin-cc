@@ -136,6 +136,9 @@ function formatSection(title, body) {
 function formatUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   const stat = fs.statSync(absolutePath);
+  if (stat.isDirectory()) {
+    return `### ${relativePath}\n(skipped: directory)`;
+  }
   if (stat.size > MAX_UNTRACKED_BYTES) {
     return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
   }

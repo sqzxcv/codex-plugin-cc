@@ -68,3 +68,21 @@ test("resolveReviewTarget requires an explicit base when no default branch can b
     /Unable to detect the repository default branch\. Pass --base <ref> or use --scope working-tree\./
   );
 });
+
+test("collectReviewContext skips untracked directories without crashing", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+
+  // Create an untracked directory with a file inside
+  fs.mkdirSync(path.join(cwd, "untracked-dir"));
+  fs.writeFileSync(path.join(cwd, "untracked-dir", "nested.js"), "// nested\n");
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const context = collectReviewContext(cwd, target);
+
+  assert.match(context.content, /untracked-dir\/nested\.js/);
+  assert.doesNotMatch(context.content, /EISDIR/);
+});
