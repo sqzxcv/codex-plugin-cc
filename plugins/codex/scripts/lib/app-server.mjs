@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
@@ -20,6 +20,101 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
+
+/**
+ * Cached sandbox probe results, keyed by resolved codex binary path.
+ * @type {Map<string, { type: "bwrap" | "landlock" | "none", configArgs: string[] }>}
+ */
+const sandboxProbeCache = new Map();
+
+/**
+ * Resolve the absolute path to the `codex` binary that would be used with
+ * the given env. This ensures the probe matches the actual spawn context.
+ */
+function resolveCodexPath(env) {
+  const result = spawnSync("which", ["codex"], {
+    encoding: "utf8",
+    stdio: "pipe",
+    shell: false,
+    env: env ?? process.env
+  });
+  return (!result.error && result.status === 0) ? result.stdout.trim() : "codex";
+}
+
+/**
+ * Probes whether the Linux sandbox works on this system.
+ * - First tries bwrap (the default).
+ * - If bwrap fails (e.g. missing CAP_NET_ADMIN in containers/WSL), tries Landlock.
+ * - Caches per resolved codex binary path so different env/PATH combos get
+ *   their own probe result.
+ *
+ * On non-Linux platforms the sandbox is handled natively (Seatbelt/macOS,
+ * Windows restricted token) and never needs this fallback.
+ *
+ * @param {string} cwd - Working directory for the probe.
+ * @param {{ env?: NodeJS.ProcessEnv }} [options] - Optional env to match the spawn context.
+ */
+export function probeSandboxSupport(cwd, options) {
+  const env = options?.env ?? undefined;
+  // When a custom env is supplied, skip caching — the caller may have a
+  // different PATH or config that changes sandbox behaviour.
+  const useCache = !options?.env;
+
+  if (process.platform !== "linux") {
+    return { type: "bwrap", configArgs: [] };
+  }
+
+  const codexPath = resolveCodexPath(env);
+  if (useCache) {
+    const cached = sandboxProbeCache.get(codexPath);
+    if (cached) {
+      return cached;
+    }
+  }
+
+  const spawnOpts = { cwd, encoding: "utf8", stdio: "pipe", shell: false, env };
+
+  // First, verify codex itself can launch. If it can't (ENOENT, permission error),
+  // that's a launcher problem, not a sandbox problem — surface it directly.
+  const launchTest = spawnSync("codex", ["--version"], spawnOpts);
+  if (launchTest.error) {
+    const code = launchTest.error.code ?? "";
+    throw new Error(
+      `Codex CLI cannot be launched (${code || launchTest.error.message}). ` +
+      "Verify that codex is installed and on your PATH."
+    );
+  }
+
+  const bwrapTest = spawnSync("codex", ["sandbox", "linux", "echo", "ok"], spawnOpts);
+  if (!bwrapTest.error && bwrapTest.status === 0) {
+    const result = { type: "bwrap", configArgs: [] };
+    if (useCache) sandboxProbeCache.set(codexPath, result);
+    return result;
+  }
+
+  const landlockTest = spawnSync(
+    "codex",
+    ["-c", "use_legacy_landlock=true", "sandbox", "linux", "echo", "ok"],
+    spawnOpts
+  );
+  if (!landlockTest.error && landlockTest.status === 0) {
+    const result = {
+      type: "landlock",
+      configArgs: ["-c", "use_legacy_landlock=true"]
+    };
+    if (useCache) sandboxProbeCache.set(codexPath, result);
+    return result;
+  }
+
+  const result = { type: "none", configArgs: [] };
+  if (useCache) sandboxProbeCache.set(codexPath, result);
+  return result;
+}
+
+/** Reset the cached sandbox probe (for testing). */
+export function resetSandboxProbeCache() {
+  sandboxProbeCache.clear();
+}
 
 /** @type {ClientInfo} */
 const DEFAULT_CLIENT_INFO = {
@@ -185,7 +280,15 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
-    this.proc = spawn("codex", ["app-server"], {
+    const sandbox = probeSandboxSupport(this.cwd, { env: this.options.env });
+    if (sandbox.type === "none") {
+      throw new Error(
+        "Codex sandbox is unavailable: neither bwrap nor Landlock works on this system. " +
+        "See https://developers.openai.com/codex/concepts/sandboxing#prerequisites for setup instructions."
+      );
+    }
+    const args = [...sandbox.configArgs, "app-server"];
+    this.proc = spawn("codex", args, {
       cwd: this.cwd,
       env: this.options.env,
       stdio: ["pipe", "pipe", "pipe"]

@@ -21,6 +21,7 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
+import { probeSandboxSupport } from "./lib/app-server.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -184,6 +185,8 @@ function buildSetupReport(cwd, actionsTaken = []) {
   const authStatus = getCodexLoginStatus(cwd);
   const config = getConfig(workspaceRoot);
 
+  const sandbox = codexStatus.available ? probeSandboxSupport(cwd) : null;
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -191,6 +194,12 @@ function buildSetupReport(cwd, actionsTaken = []) {
   if (codexStatus.available && !authStatus.loggedIn) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
+  }
+  if (sandbox && sandbox.type === "none") {
+    nextSteps.push(
+      "Sandbox unavailable: neither bwrap nor Landlock works on this system. " +
+      "See https://developers.openai.com/codex/concepts/sandboxing#prerequisites for setup instructions."
+    );
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/codex:setup --enable-review-gate` to require a fresh review before stop.");
@@ -202,6 +211,7 @@ function buildSetupReport(cwd, actionsTaken = []) {
     npm: npmStatus,
     codex: codexStatus,
     auth: authStatus,
+    sandbox: sandbox ?? { type: "unknown", configArgs: [] },
     sessionRuntime: getSessionRuntimeStatus(),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,

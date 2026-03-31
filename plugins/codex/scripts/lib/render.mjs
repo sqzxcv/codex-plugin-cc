@@ -174,6 +174,22 @@ function appendReasoningSection(lines, reasoningSummary) {
   }
 }
 
+function formatSandboxDetail(sandbox) {
+  if (!sandbox) {
+    return "unknown";
+  }
+  switch (sandbox.type) {
+    case "bwrap":
+      return "bwrap (default)";
+    case "landlock":
+      return "landlock (fallback — bwrap unavailable)";
+    case "none":
+      return "unavailable — neither bwrap nor landlock works";
+    default:
+      return "unknown";
+  }
+}
+
 export function renderSetupReport(report) {
   const lines = [
     "# Codex Setup",
@@ -185,6 +201,7 @@ export function renderSetupReport(report) {
     `- npm: ${report.npm.detail}`,
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
+    `- sandbox: ${formatSandboxDetail(report.sandbox)}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
