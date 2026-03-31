@@ -7,7 +7,8 @@ export function runCommand(command, args = [], options = {}) {
     env: options.env,
     encoding: "utf8",
     input: options.input,
-    stdio: options.stdio ?? "pipe"
+    stdio: options.stdio ?? "pipe",
+    shell: options.shell ?? false
   });
 
   return {
@@ -33,7 +34,8 @@ export function runCommandChecked(command, args = [], options = {}) {
 }
 
 export function binaryAvailable(command, versionArgs = ["--version"], options = {}) {
-  const result = runCommand(command, versionArgs, options);
+  const platformOptions = process.platform === "win32" ? { ...options, shell: true } : options;
+  const result = runCommand(command, versionArgs, platformOptions);
   if (result.error && /** @type {NodeJS.ErrnoException} */ (result.error).code === "ENOENT") {
     return { available: false, detail: "not found" };
   }
