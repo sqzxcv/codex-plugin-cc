@@ -74,7 +74,7 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--review-gate-max <n|off>] [--review-gate-cooldown <minutes|off>] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
@@ -204,6 +204,8 @@ function buildSetupReport(cwd, actionsTaken = []) {
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(),
     reviewGateEnabled: Boolean(config.stopReviewGate),
+    reviewGateMaxPerSession: config.stopReviewGateMaxPerSession ?? null,
+    reviewGateCooldownMinutes: config.stopReviewGateCooldownMinutes ?? null,
     actionsTaken,
     nextSteps
   };
@@ -211,7 +213,7 @@ function buildSetupReport(cwd, actionsTaken = []) {
 
 function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "review-gate-max", "review-gate-cooldown"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
   });
 
@@ -229,6 +231,32 @@ function handleSetup(argv) {
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+  }
+
+  if (options["review-gate-max"] != null) {
+    const max = options["review-gate-max"] === "off" ? null : Number(options["review-gate-max"]);
+    if (max !== null && (!Number.isInteger(max) || max < 1)) {
+      throw new Error(`--review-gate-max must be a positive integer or "off".`);
+    }
+    setConfig(workspaceRoot, "stopReviewGateMaxPerSession", max);
+    actionsTaken.push(
+      max != null
+        ? `Set review gate session limit to ${max} reviews per session.`
+        : `Removed review gate session limit.`
+    );
+  }
+
+  if (options["review-gate-cooldown"] != null) {
+    const cooldown = options["review-gate-cooldown"] === "off" ? null : Number(options["review-gate-cooldown"]);
+    if (cooldown !== null && (Number.isNaN(cooldown) || cooldown < 1)) {
+      throw new Error(`--review-gate-cooldown must be a positive number (minutes) or "off".`);
+    }
+    setConfig(workspaceRoot, "stopReviewGateCooldownMinutes", cooldown);
+    actionsTaken.push(
+      cooldown != null
+        ? `Set review gate cooldown to ${cooldown} minute(s).`
+        : `Removed review gate cooldown.`
+    );
   }
 
   const finalReport = buildSetupReport(cwd, actionsTaken);

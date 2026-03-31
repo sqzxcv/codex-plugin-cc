@@ -14,6 +14,8 @@ import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_COOLDOWN_MINUTES = null;
+const DEFAULT_MAX_PER_SESSION = null;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
@@ -43,6 +45,50 @@ function filterJobsForCurrentSession(jobs, input = {}) {
     return jobs;
   }
   return jobs.filter((job) => job.sessionId === sessionId);
+}
+
+function countSessionStopReviews(jobs) {
+  return jobs.filter(
+    (job) =>
+      job.jobClass === "review" &&
+      job.title === "Codex Stop Gate Review" &&
+      (job.status === "completed" || job.status === "running" || job.status === "queued")
+  ).length;
+}
+
+function findLastStopReviewTime(jobs) {
+  const stopReview = jobs.find(
+    (job) =>
+      job.jobClass === "review" &&
+      job.title === "Codex Stop Gate Review" &&
+      job.completedAt
+  );
+  return stopReview?.completedAt ? new Date(stopReview.completedAt).getTime() : null;
+}
+
+function checkThrottleLimits(config, jobs) {
+  const maxPerSession = config.stopReviewGateMaxPerSession ?? DEFAULT_MAX_PER_SESSION;
+  if (maxPerSession != null && maxPerSession > 0) {
+    const count = countSessionStopReviews(jobs);
+    if (count >= maxPerSession) {
+      return `Stop-gate review skipped: session limit reached (${count}/${maxPerSession}). Run /codex:review manually if needed.`;
+    }
+  }
+
+  const cooldownMinutes = config.stopReviewGateCooldownMinutes ?? DEFAULT_COOLDOWN_MINUTES;
+  if (cooldownMinutes != null && cooldownMinutes > 0) {
+    const lastTime = findLastStopReviewTime(jobs);
+    if (lastTime != null) {
+      const elapsed = Date.now() - lastTime;
+      const cooldownMs = cooldownMinutes * 60 * 1000;
+      if (elapsed < cooldownMs) {
+        const remainingMinutes = Math.ceil((cooldownMs - elapsed) / 60000);
+        return `Stop-gate review skipped: cooldown active (${remainingMinutes}m remaining). Run /codex:review manually if needed.`;
+      }
+    }
+  }
+
+  return null;
 }
 
 function buildStopReviewPrompt(input = {}) {
@@ -159,6 +205,13 @@ function main() {
   const setupNote = buildSetupNote(cwd);
   if (setupNote) {
     logNote(setupNote);
+    logNote(runningTaskNote);
+    return;
+  }
+
+  const throttleNote = checkThrottleLimits(config, jobs);
+  if (throttleNote) {
+    logNote(throttleNote);
     logNote(runningTaskNote);
     return;
   }
