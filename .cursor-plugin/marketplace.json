@@ -1,0 +1,33 @@
+{
+  "name": "openai-codex",
+  "owner": {
+    "name": "OpenAI"
+  },
+  "metadata": {
+    "description": "Codex plugins to use in Cursor for delegation and code review.",
+    "version": "1.0.1",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "codex",
+      "source": "codex",
+      "description": "Use Codex from Cursor to review code or delegate tasks.",
+      "version": "1.0.1",
+      "category": "developer-tools",
+      "tags": [
+        "review",
+        "ai",
+        "codex",
+        "code-quality"
+      ],
+      "keywords": [
+        "codex",
+        "openai",
+        "code-review",
+        "delegation",
+        "ai-assistant"
+      ]
+    }
+  ]
+}

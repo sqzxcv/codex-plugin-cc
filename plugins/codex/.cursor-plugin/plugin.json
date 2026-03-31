@@ -1,0 +1,22 @@
+{
+  "name": "codex",
+  "version": "1.0.1",
+  "description": "Use Codex from Cursor to review code or delegate tasks.",
+  "author": {
+    "name": "OpenAI"
+  },
+  "homepage": "https://github.com/openai/codex-plugin-cc",
+  "repository": "https://github.com/openai/codex-plugin-cc",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "openai",
+    "code-review",
+    "delegation",
+    "ai-assistant"
+  ],
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "agents": "./agents/",
+  "hooks": "./hooks/cursor-hooks.json"
+}

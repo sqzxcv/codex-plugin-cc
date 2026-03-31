@@ -1,8 +1,8 @@
-# Codex plugin for Claude Code
+# Codex plugin for Claude Code & Cursor
 
-Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
+Use Codex from inside Claude Code or Cursor for code reviews or to delegate tasks to Codex.
 
-This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
+This plugin is for Claude Code and Cursor users who want an easy way to start using Codex from the workflow
 they already have.
 
 <video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
@@ -20,6 +20,8 @@ they already have.
 - **Node.js 18.18 or later**
 
 ## Install
+
+### Claude Code
 
 Add the marketplace in Claude Code:
 
@@ -39,7 +41,19 @@ Reload plugins:
 /reload-plugins
 ```
 
-Then run:
+### Cursor
+
+Add the plugin in Cursor using the `/add-plugin` command:
+
+```
+/add-plugin openai/codex-plugin-cc
+```
+
+Alternatively, browse the [Cursor Marketplace](https://cursor.com/marketplace) and install the Codex plugin from there.
+
+### Setup
+
+After installing (in either Claude Code or Cursor), run:
 
 ```bash
 /codex:setup
