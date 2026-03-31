@@ -550,6 +550,10 @@ function applyTurnNotification(state, message) {
   }
 }
 
+function isThreadLifecycleNotification(message) {
+  return message.method === "thread/started" || message.method === "thread/name/updated";
+}
+
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
@@ -560,7 +564,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       return;
     }
 
-    if (message.method === "thread/started" || message.method === "thread/name/updated") {
+    if (isThreadLifecycleNotification(message)) {
       applyTurnNotification(state, message);
       return;
     }
@@ -583,7 +587,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       state.threadTurnIds.set(state.threadId, state.turnId);
     }
     for (const message of state.bufferedNotifications) {
-      if (belongsToTurn(state, message)) {
+      if (isThreadLifecycleNotification(message) || belongsToTurn(state, message)) {
         applyTurnNotification(state, message);
       } else {
         if (previousHandler) {
