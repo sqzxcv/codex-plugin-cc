@@ -135,17 +135,21 @@ function formatSection(title, body) {
 
 function formatUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
-  const stat = fs.statSync(absolutePath);
-  if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
-  }
+  try {
+    const stat = fs.statSync(absolutePath);
+    if (stat.size > MAX_UNTRACKED_BYTES) {
+      return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    }
 
-  const buffer = fs.readFileSync(absolutePath);
-  if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
-  }
+    const buffer = fs.readFileSync(absolutePath);
+    if (!isProbablyText(buffer)) {
+      return `### ${relativePath}\n(skipped: binary file)`;
+    }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+    return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  } catch {
+    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+  }
 }
 
 function collectWorkingTreeContext(cwd, state) {
