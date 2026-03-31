@@ -38,7 +38,6 @@ import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable, runCommand } from "./process.mjs";
-import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -674,8 +673,7 @@ export function getCodexAvailability(cwd) {
 }
 
 export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(workspaceRoot)?.endpoint ?? null;
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
   if (endpoint) {
     return {
       mode: "shared",
