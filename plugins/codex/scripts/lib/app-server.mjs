@@ -15,6 +15,15 @@ import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
 
+/**
+ * Strip ANSI escape sequences (e.g. bracketed paste mode `[?2004h`)
+ * that may leak from the shell environment into the JSONL stream.
+ */
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07/g;
+export function stripAnsi(line) {
+  return line.replace(ANSI_ESCAPE_RE, "");
+}
+
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
 const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"));
 
@@ -114,15 +123,16 @@ class AppServerClientBase {
   }
 
   handleLine(line) {
-    if (!line.trim()) {
+    const cleaned = stripAnsi(line).trim();
+    if (!cleaned) {
       return;
     }
 
     let message;
     try {
-      message = JSON.parse(line);
+      message = JSON.parse(cleaned);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line: cleaned }));
       return;
     }
 
