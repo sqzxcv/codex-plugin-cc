@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { writeExecutable } from "./helpers.mjs";
@@ -465,7 +466,7 @@ rl.on("line", (line) => {
 	              }
 	            }
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
-	          }, 400);
+	          }, 5000);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);
@@ -510,8 +511,12 @@ rl.on("line", (line) => {
 }
 
 export function buildEnv(binDir) {
+  const homeDir = path.join(binDir, "home");
+  fs.mkdirSync(homeDir, { recursive: true });
   return {
     ...process.env,
-    PATH: `${binDir}:${process.env.PATH}`
+    PATH: `${binDir}:${process.env.PATH}`,
+    HOME: homeDir,
+    USERPROFILE: homeDir
   };
 }

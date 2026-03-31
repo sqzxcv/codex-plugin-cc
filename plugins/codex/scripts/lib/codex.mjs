@@ -38,11 +38,15 @@ import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable, runCommand } from "./process.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
+const LOGIN_FREE_PROVIDER_NAMES = new Set(["oss", "ollama", "lmstudio"]);
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -652,6 +656,208 @@ function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 
+function parseTomlPath(rawPath) {
+  const source = String(rawPath ?? "").trim();
+  if (!source) {
+    return [];
+  }
+
+  const segments = [];
+  let current = "";
+  let quote = null;
+
+  for (const character of source) {
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+
+    if (character === ".") {
+      if (current.trim()) {
+        segments.push(current.trim());
+      }
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (current.trim()) {
+    segments.push(current.trim());
+  }
+
+  return segments;
+}
+
+function parseTomlScalar(rawValue) {
+  const source = String(rawValue ?? "").trim();
+  if (!source) {
+    return null;
+  }
+
+  const commentIndex = source.indexOf("#");
+  const value = commentIndex === -1 ? source : source.slice(0, commentIndex).trimEnd();
+  const quoted = value.match(/^"(.*)"$/) ?? value.match(/^'(.*)'$/);
+  if (quoted) {
+    return quoted[1];
+  }
+  return value || null;
+}
+
+function parseProviderSelectionFromToml(rawToml) {
+  const providerSections = new Map();
+  let modelProvider = null;
+  let currentSection = [];
+
+  for (const rawLine of String(rawToml ?? "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      currentSection = parseTomlPath(sectionMatch[1]);
+      continue;
+    }
+
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, equalsIndex).trim();
+    const value = line.slice(equalsIndex + 1).trim();
+
+    if (currentSection.length === 0 && key === "model_provider") {
+      const parsedProvider = parseTomlScalar(value);
+      if (parsedProvider) {
+        modelProvider = parsedProvider;
+      }
+      continue;
+    }
+
+    if (currentSection[0] !== "model_providers" || currentSection.length < 2) {
+      continue;
+    }
+
+    const providerName = currentSection[1].toLowerCase();
+    if (!providerName) {
+      continue;
+    }
+
+    const existing = providerSections.get(providerName) ?? {
+      keyCount: 0,
+      hasAuthHint: false
+    };
+    existing.keyCount += 1;
+    if (key === "http_headers" || key === "base_url" || /api[_-]?key/i.test(key) || /token/i.test(key)) {
+      existing.hasAuthHint = true;
+    }
+    providerSections.set(providerName, existing);
+  }
+
+  return {
+    modelProvider,
+    providerSections
+  };
+}
+
+function listProjectConfigFiles(cwd) {
+  const files = [];
+  let current = path.resolve(cwd);
+
+  while (true) {
+    const candidate = path.join(current, ".codex", "config.toml");
+    if (fs.existsSync(candidate)) {
+      files.push(candidate);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return files.reverse();
+}
+
+function resolveUserConfigFile(env = process.env) {
+  const homeDir = env.HOME || os.homedir();
+  if (!homeDir) {
+    return null;
+  }
+  return path.join(homeDir, ".codex", "config.toml");
+}
+
+function getModelProviderSelection(cwd, env = process.env) {
+  const candidates = [];
+  const userConfig = resolveUserConfigFile(env);
+  if (userConfig) {
+    candidates.push(userConfig);
+  }
+  candidates.push(...listProjectConfigFiles(cwd));
+
+  let selectedProvider = null;
+  let selectedSource = null;
+  const providerSections = new Map();
+
+  for (const configPath of candidates) {
+    if (!fs.existsSync(configPath)) {
+      continue;
+    }
+
+    let rawToml = "";
+    try {
+      rawToml = fs.readFileSync(configPath, "utf8");
+    } catch {
+      continue;
+    }
+
+    const parsed = parseProviderSelectionFromToml(rawToml);
+    if (parsed.modelProvider) {
+      selectedProvider = parsed.modelProvider;
+      selectedSource = configPath;
+    }
+
+    for (const [providerName, sectionState] of parsed.providerSections.entries()) {
+      providerSections.set(providerName, {
+        keyCount: (providerSections.get(providerName)?.keyCount ?? 0) + sectionState.keyCount,
+        hasAuthHint: (providerSections.get(providerName)?.hasAuthHint ?? false) || sectionState.hasAuthHint,
+        source: configPath
+      });
+    }
+  }
+
+  if (!selectedProvider) {
+    return null;
+  }
+
+  const normalizedProvider = selectedProvider.trim().toLowerCase();
+  if (!normalizedProvider || normalizedProvider === "openai") {
+    return null;
+  }
+
+  const sectionState = providerSections.get(normalizedProvider) ?? null;
+  return {
+    provider: normalizedProvider,
+    source: sectionState?.source ?? selectedSource ?? null,
+    hasProviderConfig:
+      Boolean(sectionState && (sectionState.keyCount > 0 || sectionState.hasAuthHint)) ||
+      LOGIN_FREE_PROVIDER_NAMES.has(normalizedProvider)
+  };
+}
+
 export function getCodexAvailability(cwd) {
   const versionStatus = binaryAvailable("codex", ["--version"], { cwd });
   if (!versionStatus.available) {
@@ -698,6 +904,19 @@ export function getCodexLoginStatus(cwd) {
       available: false,
       loggedIn: false,
       detail: availability.detail
+    };
+  }
+
+  const selectedProvider = getModelProviderSelection(cwd);
+  if (selectedProvider) {
+    const sourceDetail = selectedProvider.source ? ` via ${selectedProvider.source}` : "";
+    const readinessDetail = selectedProvider.hasProviderConfig
+      ? `configured model_provider "${selectedProvider.provider}"${sourceDetail}; login status is not required for this provider`
+      : `model_provider "${selectedProvider.provider}" selected${sourceDetail}; login status is not required for this provider`;
+    return {
+      available: true,
+      loggedIn: true,
+      detail: readinessDetail
     };
   }
 
