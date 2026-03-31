@@ -16,10 +16,13 @@ import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
 
 /**
- * Strip ANSI escape sequences (e.g. bracketed paste mode `[?2004h`)
- * that may leak from the shell environment into the JSONL stream.
+ * Strip ANSI escape sequences that may leak from the shell environment
+ * into the JSONL stream. Covers:
+ *  - CSI sequences:  ESC [ <params> <final>  (final = 0x40–0x7E)
+ *  - OSC sequences:  ESC ] ... (BEL | ESC \)
+ *  - Simple escapes: ESC <char>  (e.g. ESC c for reset)
  */
-const ANSI_ESCAPE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07/g;
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;?]*[\x40-\x7e]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[\x20-\x2f]*[\x40-\x7e]/g;
 export function stripAnsi(line) {
   return line.replace(ANSI_ESCAPE_RE, "");
 }
