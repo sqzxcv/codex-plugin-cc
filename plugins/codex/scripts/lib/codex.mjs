@@ -38,6 +38,7 @@ import { readJsonFile, safeReadFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable, runCommand } from "./process.mjs";
+import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -709,9 +710,10 @@ export function getCodexLoginStatus(cwd) {
     };
   }
 
-  const providerRe = /^model_provider\s*=\s*["']?([^"'\s\r\n]+)["']?/m;
+  const providerRe = /^\s*model_provider\s*=\s*["']?([^"'\s\r\n]+)["']?/m;
   const globalConfig = safeReadFile(`${process.env.HOME || process.env.USERPROFILE}/.codex/config.toml`);
-  const projectConfig = safeReadFile(`${cwd}/.codex/config.toml`);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const projectConfig = safeReadFile(`${workspaceRoot}/.codex/config.toml`);
   const providerMatch = projectConfig.match(providerRe) || globalConfig.match(providerRe);
   if (providerMatch && providerMatch[1] !== "openai") {
     return {
