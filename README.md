@@ -1,9 +1,9 @@
-# Codex plugin for Claude Code
+# Codex and OpenCode plugins for Claude Code
 
-Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
+Use Codex or OpenCode from inside Claude Code for code reviews or delegated tasks.
 
-This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
-they already have.
+This marketplace is for Claude Code users who want an easy way to start using Codex or OpenCode from
+the workflow they already have.
 
 <video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
 
@@ -12,11 +12,13 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/opencode:setup`, `/opencode:rescue`, `/opencode:status`, `/opencode:result`, and `/opencode:cancel` to delegate work to OpenCode and manage background jobs
 
 ## Requirements
 
 - **ChatGPT subscription (incl. Free) or OpenAI API key.**
   - Usage will contribute to your Codex usage limits. [Learn more](https://developers.openai.com/codex/pricing).
+- **OpenCode CLI with at least one configured provider** if you want to use the OpenCode plugin.
 - **Node.js 18.18 or later**
 
 ## Install
@@ -27,10 +29,11 @@ Add the marketplace in Claude Code:
 /plugin marketplace add openai/codex-plugin-cc
 ```
 
-Install the plugin:
+Install the plugin you want:
 
 ```bash
 /plugin install codex@openai-codex
+/plugin install opencode@openai-codex
 ```
 
 Reload plugins:
@@ -59,10 +62,29 @@ If Codex is installed but not logged in yet, run:
 !codex login
 ```
 
+To use OpenCode instead, run:
+
+```bash
+/opencode:setup
+```
+
+If OpenCode is missing, install it with either:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+or:
+
+```bash
+npm install -g opencode-ai@latest
+```
+
 After install, you should see:
 
 - the slash commands listed below
 - the `codex:codex-rescue` subagent in `/agents`
+- the `opencode:opencode-rescue` subagent in `/agents`
 
 One simple first run is:
 
@@ -70,6 +92,14 @@ One simple first run is:
 /codex:review --background
 /codex:status
 /codex:result
+```
+
+For OpenCode, a comparable first run is:
+
+```bash
+/opencode:rescue investigate the failing test and propose a fix
+/opencode:status
+/opencode:result
 ```
 
 ## Usage
