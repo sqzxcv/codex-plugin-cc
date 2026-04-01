@@ -5,7 +5,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  loadState,
+  generateJobId,
+  upsertJob,
+  listJobs,
+  setConfig,
+  getConfig,
+  writeJobFile,
+  readJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +116,155 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+// ---------------------------------------------------------------------------
+// loadState
+// ---------------------------------------------------------------------------
+
+test("loadState returns default state when the state file does not exist", () => {
+  const workspace = makeTempDir();
+  const state = loadState(workspace);
+
+  assert.equal(state.version, 1);
+  assert.deepEqual(state.config, { stopReviewGate: false });
+  assert.deepEqual(state.jobs, []);
+});
+
+test("loadState returns default state when the state file contains invalid JSON", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, "{ not valid json }", "utf8");
+
+  const state = loadState(workspace);
+  assert.deepEqual(state.jobs, []);
+});
+
+test("loadState merges config defaults when some config keys are missing", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(
+    stateFile,
+    JSON.stringify({ version: 1, config: {}, jobs: [] }),
+    "utf8"
+  );
+
+  const state = loadState(workspace);
+  assert.equal(state.config.stopReviewGate, false);
+});
+
+test("loadState round-trips a persisted state file", () => {
+  const workspace = makeTempDir();
+  const original = {
+    version: 1,
+    config: { stopReviewGate: true },
+    jobs: [{ id: "job-1", status: "completed", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }]
+  };
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, `${JSON.stringify(original, null, 2)}\n`, "utf8");
+
+  const loaded = loadState(workspace);
+  assert.equal(loaded.config.stopReviewGate, true);
+  assert.equal(loaded.jobs.length, 1);
+  assert.equal(loaded.jobs[0].id, "job-1");
+});
+
+// ---------------------------------------------------------------------------
+// generateJobId
+// ---------------------------------------------------------------------------
+
+test("generateJobId produces unique identifiers for successive calls", () => {
+  const id1 = generateJobId();
+  const id2 = generateJobId();
+  assert.notEqual(id1, id2);
+});
+
+test("generateJobId starts with the default prefix", () => {
+  const id = generateJobId();
+  assert.match(id, /^job-/);
+});
+
+test("generateJobId honours a custom prefix", () => {
+  const id = generateJobId("review");
+  assert.match(id, /^review-/);
+});
+
+// ---------------------------------------------------------------------------
+// upsertJob / listJobs
+// ---------------------------------------------------------------------------
+
+test("upsertJob inserts a new job and listJobs returns it", () => {
+  const workspace = makeTempDir();
+
+  upsertJob(workspace, { id: "job-a", status: "queued", title: "My Job" });
+  const jobs = listJobs(workspace);
+
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].id, "job-a");
+  assert.equal(jobs[0].status, "queued");
+});
+
+test("upsertJob merges a patch into an existing job", () => {
+  const workspace = makeTempDir();
+
+  upsertJob(workspace, { id: "job-b", status: "queued", title: "Task" });
+  upsertJob(workspace, { id: "job-b", status: "running", phase: "executing" });
+
+  const jobs = listJobs(workspace);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "running");
+  assert.equal(jobs[0].phase, "executing");
+  assert.equal(jobs[0].title, "Task");
+});
+
+test("upsertJob prepends new jobs so the newest appears first", () => {
+  const workspace = makeTempDir();
+
+  upsertJob(workspace, { id: "job-first", status: "completed" });
+  upsertJob(workspace, { id: "job-second", status: "completed" });
+
+  const jobs = listJobs(workspace);
+  assert.equal(jobs[0].id, "job-second");
+  assert.equal(jobs[1].id, "job-first");
+});
+
+// ---------------------------------------------------------------------------
+// setConfig / getConfig
+// ---------------------------------------------------------------------------
+
+test("setConfig persists a config value and getConfig retrieves it", () => {
+  const workspace = makeTempDir();
+
+  setConfig(workspace, "stopReviewGate", true);
+  const config = getConfig(workspace);
+
+  assert.equal(config.stopReviewGate, true);
+});
+
+test("setConfig can toggle a config value back", () => {
+  const workspace = makeTempDir();
+
+  setConfig(workspace, "stopReviewGate", true);
+  setConfig(workspace, "stopReviewGate", false);
+
+  assert.equal(getConfig(workspace).stopReviewGate, false);
+});
+
+// ---------------------------------------------------------------------------
+// writeJobFile / readJobFile
+// ---------------------------------------------------------------------------
+
+test("writeJobFile writes a job payload and readJobFile round-trips it", () => {
+  const workspace = makeTempDir();
+  const jobId = "job-wf";
+  const payload = { id: jobId, status: "completed", result: { value: 42 } };
+
+  const jobFile = writeJobFile(workspace, jobId, payload);
+  assert.equal(fs.existsSync(jobFile), true);
+
+  const loaded = readJobFile(jobFile);
+  assert.deepEqual(loaded, payload);
 });
