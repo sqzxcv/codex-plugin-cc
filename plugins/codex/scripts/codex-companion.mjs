@@ -845,6 +845,7 @@ function handleResult(argv) {
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
+    
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const payload = {
     job,
@@ -906,6 +907,11 @@ async function handleCancel(argv) {
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference);
+  const sessionId = process.env[SESSION_ID_ENV] ?? null;
+
+  if (!reference && sessionId && job.sessionId && job.sessionId !== sessionId){
+  throw new Error("No active job found for the current session.");
+}
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
