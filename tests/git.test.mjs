@@ -55,6 +55,23 @@ test("resolveReviewTarget honors explicit base overrides", () => {
   assert.equal(target.baseRef, "main");
 });
 
+test("collectReviewContext skips broken symlinks in untracked files", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+
+  // Create a broken symlink pointing to a nonexistent target.
+  fs.symlinkSync(path.join(cwd, "nonexistent-target"), path.join(cwd, "broken-link"));
+
+  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(target.mode, "working-tree");
+  assert.match(context.content, /broken symlink/);
+});
+
 test("resolveReviewTarget requires an explicit base when no default branch can be inferred", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
