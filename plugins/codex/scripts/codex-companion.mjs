@@ -916,7 +916,8 @@ async function handleCancel(argv) {
     const activeSessionJobs = jobs.filter(
       (job) =>
         (job.status === "queued" || job.status === "running") &&
-         job.sessionId === sessionId
+        job.sessionId != null &&
+        job.sessionId === sessionId
        );
     
       if (activeSessionJobs.length === 0) {
