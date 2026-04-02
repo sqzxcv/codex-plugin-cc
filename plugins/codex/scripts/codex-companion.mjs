@@ -908,9 +908,9 @@ async function handleCancel(argv) {
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference);
   const sessionId = process.env[SESSION_ID_ENV] ?? null;
 
-  if (!reference && sessionId && job.sessionId && job.sessionId !== sessionId){
-  throw new Error("No active job found for the current session.");
-}
+  if (!reference && sessionId && job.sessionId !== sessionId) {
+    throw new Error("No active job found for the current session.");
+  }
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
