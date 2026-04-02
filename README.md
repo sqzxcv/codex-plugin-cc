@@ -7,6 +7,18 @@ they already have.
 
 <video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
 
+## Purpose / Benefits of this Plugin
+
+This plugin bridges Claude Code and OpenAI Codex so you can leverage both AI systems without leaving your current workflow. By delegating code reviews, debugging sessions, and implementation tasks to Codex directly from Claude Code, you reduce context-switching and get faster, higher-quality feedback loops.
+
+### Key Benefits
+
+- **Faster code reviews** – run thorough or adversarial reviews on uncommitted changes or entire branches in the background while you keep working.
+- **Delegated debugging and fixes** – hand off bug investigations and patch attempts to Codex, then pull the results back when ready.
+- **Deeper repository understanding** – Codex can analyze your codebase, answer architectural questions, and explain unfamiliar code paths.
+- **Flexible model selection** – choose the right model and reasoning effort for each task, from quick triage with Spark to deep analysis with GPT-5.4.
+- **Less context-switching** – manage Codex tasks, check status, and retrieve results without leaving Claude Code.
+
 ## What You Get
 
 - `/codex:review` for a normal read-only Codex review
