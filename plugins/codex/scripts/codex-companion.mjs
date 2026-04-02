@@ -845,7 +845,6 @@ function handleResult(argv) {
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
-    
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const payload = {
     job,
