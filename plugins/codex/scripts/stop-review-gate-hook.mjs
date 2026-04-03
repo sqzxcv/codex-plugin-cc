@@ -44,7 +44,9 @@ function readHookInput() {
   const buf = Buffer.alloc(CHUNK_SIZE);
   let consecutiveEagain = 0;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  // Loop until EOF (bytesRead === 0). Only EAGAIN retries are bounded;
+  // successful reads continue indefinitely so large payloads aren't truncated.
+  while (true) {
     let bytesRead;
     try {
       bytesRead = fs.readSync(0, buf, 0, CHUNK_SIZE);
@@ -66,7 +68,9 @@ function readHookInput() {
       break;
     }
 
-    chunks.push(buf.subarray(0, bytesRead));
+    // Copy the chunk — buf is reused across iterations, so subarray
+    // would be a view into the same memory that gets overwritten.
+    chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
   }
 
   const raw = Buffer.concat(chunks).toString("utf8").trim();
