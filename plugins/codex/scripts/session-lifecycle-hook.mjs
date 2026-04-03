@@ -22,39 +22,59 @@ const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 function readHookInput() {
   const MAX_RETRIES = 50;
   const RETRY_DELAY_MS = 10;
+  const CHUNK_SIZE = 4096;
   const canAtomicsSleep =
     typeof SharedArrayBuffer === "function" &&
     typeof Atomics !== "undefined" &&
     typeof Atomics.wait === "function";
   const sleepBuffer = canAtomicsSleep ? new Int32Array(new SharedArrayBuffer(4)) : null;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const raw = fs.readFileSync(0, "utf8").trim();
-      if (!raw) {
-        return {};
-      }
-      return JSON.parse(raw);
-    } catch (err) {
-      if (err?.code === "EAGAIN" && attempt < MAX_RETRIES - 1) {
-        if (sleepBuffer) {
-          Atomics.wait(sleepBuffer, 0, 0, RETRY_DELAY_MS);
-        } else {
-          const start = Date.now();
-          while (Date.now() - start < RETRY_DELAY_MS) {
-            // Busy-wait fallback when Atomics.wait is unavailable.
-          }
-        }
-        continue;
-      }
-      if (err?.code === "EAGAIN") {
-        return {};
-      }
-      throw err;
+  function sleepSync(ms) {
+    if (sleepBuffer) {
+      Atomics.wait(sleepBuffer, 0, 0, ms);
+    } else {
+      const start = Date.now();
+      while (Date.now() - start < ms) { /* busy-wait fallback */ }
     }
   }
 
-  return {};
+  // Use low-level readSync to accumulate chunks across EAGAIN retries.
+  // readFileSync can consume a prefix of stdin before throwing EAGAIN,
+  // so retrying it would lose bytes already read.
+  const chunks = [];
+  const buf = Buffer.alloc(CHUNK_SIZE);
+  let consecutiveEagain = 0;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    let bytesRead;
+    try {
+      bytesRead = fs.readSync(0, buf, 0, CHUNK_SIZE);
+    } catch (err) {
+      if (err?.code === "EAGAIN") {
+        consecutiveEagain++;
+        if (consecutiveEagain >= MAX_RETRIES) {
+          break;
+        }
+        sleepSync(RETRY_DELAY_MS);
+        continue;
+      }
+      throw err;
+    }
+
+    consecutiveEagain = 0;
+
+    if (bytesRead === 0) {
+      break;
+    }
+
+    chunks.push(buf.subarray(0, bytesRead));
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) {
+    return {};
+  }
+  return JSON.parse(raw);
 }
 
 function shellEscape(value) {
