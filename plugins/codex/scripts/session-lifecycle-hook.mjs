@@ -20,7 +20,7 @@ export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 
 function readHookInput() {
-  const MAX_RETRIES = 50;
+  const MAX_RETRIES = 200;
   const RETRY_DELAY_MS = 10;
   const CHUNK_SIZE = 4096;
   const canAtomicsSleep =
