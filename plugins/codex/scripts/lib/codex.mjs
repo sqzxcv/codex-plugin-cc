@@ -639,7 +639,11 @@ async function startThread(client, cwd, options = {}) {
   const response = await client.request("thread/start", buildThreadParams(cwd, options));
   const threadId = response.thread.id;
   if (options.threadName) {
-    await client.request("thread/name/set", { threadId, name: options.threadName });
+    try {
+      await client.request("thread/name/set", { threadId, name: options.threadName });
+    } catch {
+      // thread/name/set not supported on this Codex CLI version
+    }
   }
   return response;
 }
