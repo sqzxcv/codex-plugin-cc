@@ -45,9 +45,17 @@ Argument handling:
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
 
 Foreground flow:
-- Run:
+- Get the repo root (falls back to "global" outside a git repo):
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"
+git rev-parse --show-toplevel 2>/dev/null || echo "global"
+```
+- Create `~/.codex` and compute the save path. Substitute `<REPO_ROOT>` with the output of the previous step:
+```bash
+node -e "const c=require('crypto'),os=require('os'),fs=require('fs'),root=process.argv[1];const h=root&&root!=='global'?c.createHash('md5').update(root).digest('hex'):'global';const d=os.homedir()+'/.codex';fs.mkdirSync(d,{recursive:true});console.log(d+'/last-review-'+h+'.md');" "<REPO_ROOT>"
+```
+- Run, piping output to both the terminal and the save path. Substitute `<SAVE_PATH>` with the node output above:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS" | tee "<SAVE_PATH>"
 ```
 - Return the command stdout verbatim, exactly as-is.
 - Do not paraphrase, summarize, or add commentary before or after it.
