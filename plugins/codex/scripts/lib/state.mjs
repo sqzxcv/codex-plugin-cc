@@ -38,9 +38,19 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const dirName = `${slug}-${hash}`;
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`);
+
+  if (pluginDataDir) {
+    const primaryDir = path.join(pluginDataDir, "state", dirName);
+    const fallbackDir = path.join(FALLBACK_STATE_ROOT_DIR, dirName);
+    if (!fs.existsSync(path.join(primaryDir, STATE_FILE_NAME)) && fs.existsSync(path.join(fallbackDir, STATE_FILE_NAME))) {
+      return fallbackDir;
+    }
+    return primaryDir;
+  }
+
+  return path.join(FALLBACK_STATE_ROOT_DIR, dirName);
 }
 
 export function resolveStateFile(cwd) {
