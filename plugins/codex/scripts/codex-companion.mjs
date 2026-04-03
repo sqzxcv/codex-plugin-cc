@@ -711,11 +711,14 @@ function findPlanFile(planName) {
 
   if (planName) {
     const candidate = planName.endsWith(".md") ? planName : `${planName}.md`;
-    const planPath = path.join(plansDir, candidate);
+    const planPath = path.resolve(plansDir, candidate);
+    if (!planPath.startsWith(plansDir + path.sep) && planPath !== plansDir) {
+      throw new Error("--plan must be a filename inside ~/.claude/plans/, not a path.");
+    }
     if (!fs.existsSync(planPath)) {
       throw new Error(`Plan not found: ${candidate}`);
     }
-    return { name: candidate.replace(/\.md$/, ""), path: planPath };
+    return { name: path.basename(planPath, ".md"), path: planPath };
   }
 
   const files = fs.readdirSync(plansDir)
