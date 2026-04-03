@@ -44,8 +44,14 @@ export function resolveStateDir(cwd) {
   if (pluginDataDir) {
     const primaryDir = path.join(pluginDataDir, "state", dirName);
     const fallbackDir = path.join(FALLBACK_STATE_ROOT_DIR, dirName);
+    // If state exists only in the tmpdir fallback (written by a Bash command
+    // without CLAUDE_PLUGIN_DATA), migrate it to the persistent location so
+    // future reads/writes use the plugin data dir and state survives tmp cleanup.
     if (!fs.existsSync(path.join(primaryDir, STATE_FILE_NAME)) && fs.existsSync(path.join(fallbackDir, STATE_FILE_NAME))) {
-      return fallbackDir;
+      fs.mkdirSync(primaryDir, { recursive: true });
+      for (const entry of fs.readdirSync(fallbackDir)) {
+        fs.copyFileSync(path.join(fallbackDir, entry), path.join(primaryDir, entry));
+      }
     }
     return primaryDir;
   }
