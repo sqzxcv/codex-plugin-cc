@@ -963,10 +963,12 @@ async function handleCancel(argv) {
 
 async function handleUsage(argv) {
   const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
     booleanOptions: ["json"]
   });
 
-  const report = await fetchCodexUsage();
+  const cwd = resolveCommandCwd(options);
+  const report = await fetchCodexUsage(cwd);
   outputResult(options.json ? report : renderUsageReport(report), options.json);
 }
 

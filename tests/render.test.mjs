@@ -61,11 +61,22 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
 test("renderUsageReport shows error when report is not ok", () => {
   const output = renderUsageReport({
     ok: false,
-    error: "Codex auth.json not found. Run `!codex login` first."
+    error: "Codex is not authenticated. Run `!codex login` first."
   });
 
   assert.match(output, /# Codex Usage/);
-  assert.match(output, /Error: Codex auth\.json not found/);
+  assert.match(output, /Error: Codex is not authenticated/);
+});
+
+test("renderUsageReport shows keychain auth error when logged in but no token file", () => {
+  const output = renderUsageReport({
+    ok: false,
+    error: "Codex is authenticated via keychain or an external credential store, which `/codex:usage` cannot read directly yet. Check your usage at https://platform.openai.com/usage instead."
+  });
+
+  assert.match(output, /# Codex Usage/);
+  assert.match(output, /keychain/);
+  assert.match(output, /platform\.openai\.com\/usage/);
 });
 
 test("renderUsageReport renders plan type and rate limits", () => {

@@ -955,8 +955,12 @@ export function readOutputSchema(schemaPath) {
 
 const CODEX_USAGE_API_URL = "https://api.openai.com/v1/codex/usage";
 
+function resolveCodexHome() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
 function resolveCodexAuthPath() {
-  return path.join(os.homedir(), ".codex", "auth.json");
+  return path.join(resolveCodexHome(), "auth.json");
 }
 
 function readCodexAuth() {
@@ -979,20 +983,21 @@ function extractAccessToken(auth) {
   return typeof token === "string" && token.trim() ? token.trim() : null;
 }
 
-export async function fetchCodexUsage() {
+export async function fetchCodexUsage(cwd) {
   const auth = readCodexAuth();
-  if (!auth) {
-    return {
-      ok: false,
-      error: "Codex auth.json not found. Run `!codex login` first."
-    };
-  }
-
   const token = extractAccessToken(auth);
+
   if (!token) {
+    const loginStatus = getCodexLoginStatus(cwd ?? process.cwd());
+    if (loginStatus.loggedIn) {
+      return {
+        ok: false,
+        error: "Codex is authenticated via keychain or an external credential store, which `/codex:usage` cannot read directly yet. Check your usage at https://platform.openai.com/usage instead."
+      };
+    }
     return {
       ok: false,
-      error: "No access token found in auth.json. Run `!codex login` to re-authenticate."
+      error: "Codex is not authenticated. Run `!codex login` first."
     };
   }
 
