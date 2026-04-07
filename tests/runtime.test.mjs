@@ -1109,6 +1109,11 @@ test("status dead-pid reconciliation does not downgrade a concurrently completed
   assert.equal(payload.waitTimedOut, false);
   assert.match(payload.job.rendered ?? "", /Handled the requested task\./);
 
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const indexed = state.jobs.find((candidate) => candidate.id === "task-race");
+  assert.equal(indexed?.status, "completed");
+  assert.equal(indexed?.pid, null);
+
   const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
   assert.equal(stored.status, "completed");
   assert.equal(stored.pid, null);

@@ -18,17 +18,34 @@ function buildDeadPidError(job) {
   return `Tracked Codex process ${pid} exited before writing a final status.`;
 }
 
+function syncStateIndexFromStoredJob(workspaceRoot, job, storedJob) {
+  const source = storedJob ?? job;
+  upsertJob(workspaceRoot, {
+    id: job.id,
+    status: source.status ?? job.status ?? null,
+    phase: source.phase ?? null,
+    pid: Number.isFinite(source.pid) ? source.pid : null,
+    completedAt: source.completedAt ?? null,
+    errorMessage: source.errorMessage ?? null,
+    threadId: source.threadId ?? null,
+    turnId: source.turnId ?? null,
+    summary: source.summary ?? job.summary ?? null
+  });
+}
+
 function markDeadPidJobFailed(workspaceRoot, job) {
   const expectedPid = Number.isFinite(job.pid) ? job.pid : null;
   const latestStoredJob = readStoredJob(workspaceRoot, job.id) ?? job;
 
   // Re-check against the latest persisted state to avoid racing a legitimate completion.
   if (!isActiveJob(latestStoredJob)) {
+    syncStateIndexFromStoredJob(workspaceRoot, job, latestStoredJob);
     return latestStoredJob;
   }
 
   // Only fail the same tracked process; a different PID means a newer run won the race.
   if (!Number.isFinite(latestStoredJob.pid) || latestStoredJob.pid !== expectedPid) {
+    syncStateIndexFromStoredJob(workspaceRoot, job, latestStoredJob);
     return latestStoredJob;
   }
 
