@@ -138,6 +138,9 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.threadId) {
     lines.push(`  Codex session ID: ${job.threadId}`);
   }
+  if (job.errorMessage) {
+    lines.push(`  Error: ${job.errorMessage}`);
+  }
   const resumeCommand = formatCodexResumeCommand(job);
   if (resumeCommand) {
     lines.push(`  Resume in Codex: ${resumeCommand}`);
@@ -374,7 +377,7 @@ export function renderStatusReport(report) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderJobStatusReport(job) {
+export function renderJobStatusReport(job, options = {}) {
   const lines = ["# Codex Job Status", ""];
   pushJobDetails(lines, job, {
     showElapsed: job.status === "queued" || job.status === "running",
@@ -384,6 +387,12 @@ export function renderJobStatusReport(job) {
     showResultHint: true,
     showReviewHint: true
   });
+
+  if (options.waitTimedOut && Number.isFinite(options.timeoutMs)) {
+    lines.push("");
+    lines.push(`Wait timed out after ${options.timeoutMs}ms while ${job.id} remained ${job.status}.`);
+  }
+
   return `${lines.join("\n").trimEnd()}\n`;
 }
 

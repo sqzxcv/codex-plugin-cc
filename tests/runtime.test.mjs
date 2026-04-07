@@ -965,6 +965,82 @@ test("status --wait times out cleanly when a job is still active", () => {
   assert.equal(payload.waitTimedOut, true);
 });
 
+test("status --wait marks dead-pid jobs failed instead of timing out", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const deadPid = 9_999_999;
+  const logFile = path.join(jobsDir, "task-dead.log");
+  const jobFile = path.join(jobsDir, "task-dead.json");
+  fs.writeFileSync(logFile, "[2026-03-18T15:30:00.000Z] Starting Codex Task.\n", "utf8");
+  fs.writeFileSync(
+    jobFile,
+    JSON.stringify(
+      {
+        id: "task-dead",
+        status: "running",
+        title: "Codex Task",
+        pid: deadPid,
+        logFile
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-dead",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            summary: "Investigate flaky test",
+            pid: deadPid,
+            logFile,
+            createdAt: "2026-03-18T15:30:00.000Z",
+            startedAt: "2026-03-18T15:30:01.000Z",
+            updatedAt: "2026-03-18T15:30:02.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "status", "task-dead", "--wait", "--timeout-ms", "25", "--json"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-dead");
+  assert.equal(payload.job.status, "failed");
+  assert.equal(payload.waitTimedOut, false);
+  assert.match(payload.job.errorMessage, /Tracked Codex process 9999999 exited before writing a final status\./);
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const job = state.jobs.find((candidate) => candidate.id === "task-dead");
+  assert.equal(job?.status, "failed");
+  assert.equal(job?.pid, null);
+
+  const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  assert.equal(stored.status, "failed");
+  assert.equal(stored.pid, null);
+  assert.match(stored.errorMessage, /Tracked Codex process 9999999 exited before writing a final status\./);
+  assert.match(fs.readFileSync(logFile, "utf8"), /Failed: Tracked Codex process 9999999 exited before writing a final status\./);
+});
+
 test("result returns the stored output for the latest finished job by default", () => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);

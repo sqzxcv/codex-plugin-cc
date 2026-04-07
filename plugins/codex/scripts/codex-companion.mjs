@@ -824,7 +824,14 @@ async function handleStatus(argv) {
           pollIntervalMs: options["poll-interval-ms"]
         })
       : buildSingleJobSnapshot(cwd, reference);
-    outputCommandResult(snapshot, renderJobStatusReport(snapshot.job), options.json);
+    outputCommandResult(
+      snapshot,
+      renderJobStatusReport(snapshot.job, {
+        waitTimedOut: Boolean(snapshot.waitTimedOut),
+        timeoutMs: snapshot.timeoutMs ?? null
+      }),
+      options.json
+    );
     return;
   }
 
