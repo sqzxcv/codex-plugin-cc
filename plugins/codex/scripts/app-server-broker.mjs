@@ -8,6 +8,7 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { stripAnsi } from "./lib/strings.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -124,11 +125,12 @@ async function main() {
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex);
+        const rawLine = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
         newlineIndex = buffer.indexOf("\n");
 
-        if (!line.trim()) {
+        const line = stripAnsi(rawLine).trim();
+        if (!line) {
           continue;
         }
 

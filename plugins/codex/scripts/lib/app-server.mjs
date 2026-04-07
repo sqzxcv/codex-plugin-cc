@@ -13,6 +13,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
+import { stripAnsi } from "./strings.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
 import { terminateProcessTree } from "./process.mjs";
 
@@ -114,8 +115,9 @@ class AppServerClientBase {
     }
   }
 
-  handleLine(line) {
-    if (!line.trim()) {
+  handleLine(rawLine) {
+    const line = stripAnsi(rawLine).trim();
+    if (!line) {
       return;
     }
 
