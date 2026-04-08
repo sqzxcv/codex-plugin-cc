@@ -20,9 +20,14 @@ export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 
 function readHookInput() {
-  const MAX_RETRIES = 200;
   const RETRY_DELAY_MS = 10;
   const CHUNK_SIZE = 4096;
+  // Time-based deadline for the first byte to arrive. Hooks are always
+  // invoked with stdin piped, so data *will* come — but the writer may be
+  // delayed (e.g. the parent process hasn't flushed yet). 5 s is generous
+  // enough to cover slow writers; the hook's own kill-timeout is the
+  // ultimate backstop if stdin never materialises.
+  const PRE_DATA_TIMEOUT_MS = 5_000;
   const canAtomicsSleep =
     typeof SharedArrayBuffer === "function" &&
     typeof Atomics !== "undefined" &&
@@ -43,21 +48,19 @@ function readHookInput() {
   // so retrying it would lose bytes already read.
   const chunks = [];
   const buf = Buffer.alloc(CHUNK_SIZE);
-  let consecutiveEagain = 0;
+  const startTime = Date.now();
 
-  // Loop until EOF (bytesRead === 0). Only EAGAIN retries are bounded;
-  // successful reads continue indefinitely so large payloads aren't truncated.
+  // Loop until EOF (bytesRead === 0). Before any data arrives, a
+  // time-based deadline prevents mistaking delayed stdin for empty input.
+  // Once data has started, keep retrying indefinitely to avoid feeding
+  // truncated JSON to JSON.parse.
   while (true) {
     let bytesRead;
     try {
       bytesRead = fs.readSync(0, buf, 0, CHUNK_SIZE);
     } catch (err) {
       if (err?.code === "EAGAIN") {
-        consecutiveEagain++;
-        // Only give up if no data has arrived yet. Once chunks contain
-        // partial data, keep retrying to avoid feeding truncated JSON
-        // to JSON.parse.
-        if (consecutiveEagain >= MAX_RETRIES && chunks.length === 0) {
+        if (chunks.length === 0 && Date.now() - startTime >= PRE_DATA_TIMEOUT_MS) {
           break;
         }
         sleepSync(RETRY_DELAY_MS);
@@ -65,8 +68,6 @@ function readHookInput() {
       }
       throw err;
     }
-
-    consecutiveEagain = 0;
 
     if (bytesRead === 0) {
       break;
