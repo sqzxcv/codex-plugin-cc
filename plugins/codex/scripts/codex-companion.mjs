@@ -302,9 +302,17 @@ function reconcileDeadPidDuringWait(cwd, reference, snapshot) {
     return snapshot;
   }
   try {
-    markDeadPidJobFailed(snapshot.workspaceRoot, snapshot.job.id, trackedPid);
-  } catch {
+    const didFail = markDeadPidJobFailed(snapshot.workspaceRoot, snapshot.job.id, trackedPid);
+    if (!didFail) {
+      return snapshot;
+    }
+  } catch (error) {
     // Never let reconciliation errors crash the poll loop.
+    appendLogLine(
+      snapshot.job.logFile ?? null,
+      `Dead-PID reconciliation skipped due to unexpected error: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return snapshot;
   }
   return buildSingleJobSnapshot(cwd, reference);
 }
@@ -317,21 +325,11 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
-    snapshot = buildSingleJobSnapshot(cwd, reference);
+    snapshot = reconcileDeadPidDuringWait(cwd, reference, buildSingleJobSnapshot(cwd, reference));
+  }
 
-    // Dead-PID fast-fail: if job is still active but the process is gone,
-    // mark it failed immediately instead of waiting for the full timeout.
-    const pid = snapshot.job.pid ?? null;
-    if (isActiveJobStatus(snapshot.job.status) && pid !== null && !isProcessAlive(pid)) {
-      try {
-        markDeadPidJobFailed(snapshot.workspaceRoot, snapshot.job.id, pid);
-      } catch {
-        // Never let reconciliation errors crash the poll loop.
-      }
-      // Re-read so the returned snapshot reflects the updated failed status.
-      snapshot = buildSingleJobSnapshot(cwd, reference);
-      break;
-    }
+  if (isActiveJobStatus(snapshot.job.status)) {
+    snapshot = reconcileDeadPidDuringWait(cwd, reference, snapshot);
   }
 
   return {

@@ -1,8 +1,9 @@
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
+import { isProcessAlive } from "./process.mjs";
 import { getConfig, listJobs, readJobFile, resolveJobFile, upsertJob, writeJobFile } from "./state.mjs";
-import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
+import { appendLogLine, SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
@@ -10,6 +11,11 @@ export const DEFAULT_MAX_PROGRESS_LINES = 4;
 
 function isActiveJob(job) {
   return job.status === "queued" || job.status === "running";
+}
+
+function normalizeTrackedPid(pid) {
+  const numeric = Number(pid);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
 /**
@@ -22,6 +28,10 @@ function isActiveJob(job) {
  * @returns {boolean} true if the job was marked failed, false if skipped
  */
 export function markDeadPidJobFailed(workspaceRoot, jobId, pid) {
+  const observedPid = normalizeTrackedPid(pid);
+  if (observedPid == null) {
+    return false;
+  }
   const jobFile = resolveJobFile(workspaceRoot, jobId);
 
   // Re-read the latest persisted state from disk (not from memory)
@@ -39,12 +49,12 @@ export function markDeadPidJobFailed(workspaceRoot, jobId, pid) {
 
   // Guard 2: only overwrite if the PID still matches what we observed as dead
   // This prevents overwriting a job that restarted with a new PID
-  if (latestJob.pid !== pid) {
+  if (normalizeTrackedPid(latestJob.pid) !== observedPid) {
     return false;
   }
 
   const completedAt = new Date().toISOString();
-  const errorMessage = `Process PID ${pid} exited unexpectedly`;
+  const errorMessage = `Process PID ${observedPid} exited unexpectedly`;
 
   const failedPatch = {
     status: "failed",
@@ -59,6 +69,7 @@ export function markDeadPidJobFailed(workspaceRoot, jobId, pid) {
     ...latestJob,
     ...failedPatch
   });
+  appendLogLine(latestJob.logFile ?? null, `Failed: ${errorMessage}`);
 
   // Persist to state index
   upsertJob(workspaceRoot, {
@@ -67,6 +78,49 @@ export function markDeadPidJobFailed(workspaceRoot, jobId, pid) {
   });
 
   return true;
+}
+
+function reconcileDeadPidJob(workspaceRoot, job) {
+  const trackedPid = normalizeTrackedPid(job.pid);
+  if (!isActiveJob(job) || trackedPid == null) {
+    return job;
+  }
+
+  if (isProcessAlive(trackedPid)) {
+    return job;
+  }
+
+  const didFail = markDeadPidJobFailed(workspaceRoot, job.id, trackedPid);
+  try {
+    const storedJob = readJobFile(resolveJobFile(workspaceRoot, job.id));
+    if (didFail) {
+      return storedJob;
+    }
+    if (!isActiveJob(storedJob)) {
+      upsertJob(workspaceRoot, {
+        id: job.id,
+        status: storedJob.status ?? null,
+        phase: storedJob.phase ?? null,
+        pid: Number.isFinite(storedJob.pid) ? storedJob.pid : null,
+        completedAt: storedJob.completedAt ?? null,
+        errorMessage: storedJob.errorMessage ?? null,
+        threadId: storedJob.threadId ?? null,
+        turnId: storedJob.turnId ?? null,
+        summary: storedJob.summary ?? job.summary ?? null
+      });
+      return {
+        ...job,
+        ...storedJob
+      };
+    }
+    return job;
+  } catch {
+    return job;
+  }
+}
+
+function reconcileDeadPidJobs(workspaceRoot, jobs) {
+  return jobs.map((job) => reconcileDeadPidJob(workspaceRoot, job));
 }
 
 export function sortJobsNewestFirst(jobs) {
@@ -274,7 +328,7 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const jobs = sortJobsNewestFirst(reconcileDeadPidJobs(workspaceRoot, filterJobsForCurrentSession(listJobs(workspaceRoot), options)));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 
@@ -302,37 +356,23 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(reconcileDeadPidJobs(workspaceRoot, listJobs(workspaceRoot)));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
   }
 
-  const storedJob = readStoredJob(workspaceRoot, selected.id);
-  const latest = storedJob ? { ...selected, ...storedJob } : selected;
-  if (storedJob) {
-    upsertJob(workspaceRoot, {
-      id: selected.id,
-      status: latest.status ?? selected.status ?? null,
-      phase: latest.phase ?? null,
-      pid: Number.isFinite(latest.pid) ? latest.pid : null,
-      completedAt: latest.completedAt ?? null,
-      errorMessage: latest.errorMessage ?? null,
-      threadId: latest.threadId ?? null,
-      turnId: latest.turnId ?? null,
-      summary: latest.summary ?? selected.summary ?? null
-    });
-  }
-
   return {
     workspaceRoot,
-    job: enrichJob(latest, { maxProgressLines: options.maxProgressLines })
+    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
   };
 }
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  const jobs = sortJobsNewestFirst(
+    reconcileDeadPidJobs(workspaceRoot, reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)))
+  );
   const selected = matchJobReference(
     jobs,
     reference,
@@ -357,7 +397,7 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(reconcileDeadPidJobs(workspaceRoot, listJobs(workspaceRoot)));
   const activeJobs = jobs.filter((job) => isActiveJob(job));
 
   if (reference) {
