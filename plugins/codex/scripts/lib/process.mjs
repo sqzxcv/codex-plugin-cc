@@ -53,24 +53,23 @@ function looksLikeMissingProcessMessage(text) {
   return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
 }
 
-export function isProcessAlive(pid, options = {}) {
-  if (!Number.isFinite(pid) || pid <= 0) {
+/**
+ * Checks whether a process with the given PID is still running.
+ * Uses signal 0 which does not kill the process - it only checks existence.
+ * @param {number | null | undefined} pid
+ * @returns {boolean}
+ */
+export function isProcessAlive(pid) {
+  if (pid == null || !Number.isFinite(pid) || pid <= 0) {
     return false;
   }
-
-  const killImpl = options.killImpl ?? process.kill.bind(process);
-
   try {
-    killImpl(pid, 0);
+    process.kill(pid, 0);
     return true;
   } catch (error) {
-    if (error?.code === "EPERM") {
-      return true;
-    }
-    if (error?.code === "ESRCH") {
-      return false;
-    }
-    return false;
+    // ESRCH = no such process (dead)
+    // EPERM = process exists but no permission to send signals (still alive)
+    return error?.code === "EPERM";
   }
 }
 

@@ -138,7 +138,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.threadId) {
     lines.push(`  Codex session ID: ${job.threadId}`);
   }
-  if (job.errorMessage) {
+  if (job.errorMessage && job.status === "failed") {
     lines.push(`  Error: ${job.errorMessage}`);
   }
   const resumeCommand = formatCodexResumeCommand(job);

@@ -22,7 +22,7 @@ import {
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isProcessAlive, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -35,6 +35,7 @@ import {
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
+  markDeadPidJobFailed,
   readStoredJob,
   resolveCancelableJob,
   resolveResultJob,
@@ -299,6 +300,20 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
     snapshot = buildSingleJobSnapshot(cwd, reference);
+
+    // Dead-PID fast-fail: if job is still active but the process is gone,
+    // mark it failed immediately instead of waiting for the full timeout.
+    const pid = snapshot.job.pid ?? null;
+    if (isActiveJobStatus(snapshot.job.status) && pid !== null && !isProcessAlive(pid)) {
+      try {
+        markDeadPidJobFailed(snapshot.workspaceRoot, snapshot.job.id, pid);
+      } catch {
+        // Never let reconciliation errors crash the poll loop.
+      }
+      // Re-read so the returned snapshot reflects the updated failed status.
+      snapshot = buildSingleJobSnapshot(cwd, reference);
+      break;
+    }
   }
 
   return {
