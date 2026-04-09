@@ -18,6 +18,37 @@ function normalizeTrackedPid(pid) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+function normalizeNullable(value) {
+  return value ?? null;
+}
+
+function buildIndexSyncPatch(indexJob, sourceJob) {
+  return {
+    id: indexJob.id,
+    status: sourceJob.status ?? indexJob.status ?? null,
+    phase: sourceJob.phase ?? null,
+    pid: Number.isFinite(sourceJob.pid) ? sourceJob.pid : null,
+    completedAt: sourceJob.completedAt ?? null,
+    errorMessage: sourceJob.errorMessage ?? null,
+    threadId: sourceJob.threadId ?? null,
+    turnId: sourceJob.turnId ?? null,
+    summary: sourceJob.summary ?? indexJob.summary ?? null
+  };
+}
+
+function indexNeedsSync(indexJob, patch) {
+  return (
+    normalizeNullable(indexJob.status) !== normalizeNullable(patch.status) ||
+    normalizeNullable(indexJob.phase) !== normalizeNullable(patch.phase) ||
+    normalizeNullable(Number.isFinite(indexJob.pid) ? indexJob.pid : null) !== normalizeNullable(patch.pid) ||
+    normalizeNullable(indexJob.completedAt) !== normalizeNullable(patch.completedAt) ||
+    normalizeNullable(indexJob.errorMessage) !== normalizeNullable(patch.errorMessage) ||
+    normalizeNullable(indexJob.threadId) !== normalizeNullable(patch.threadId) ||
+    normalizeNullable(indexJob.turnId) !== normalizeNullable(patch.turnId) ||
+    normalizeNullable(indexJob.summary) !== normalizeNullable(patch.summary)
+  );
+}
+
 /**
  * Marks a job as failed when its tracked process has died unexpectedly.
  * Re-reads the latest persisted state from disk before writing to guard
@@ -362,9 +393,24 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
     throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
   }
 
+  let storedJob = null;
+  try {
+    storedJob = readStoredJob(workspaceRoot, selected.id);
+  } catch {
+    storedJob = null;
+  }
+
+  const latest = storedJob ? { ...selected, ...storedJob } : selected;
+  if (storedJob) {
+    const indexPatch = buildIndexSyncPatch(selected, latest);
+    if (indexNeedsSync(selected, indexPatch)) {
+      upsertJob(workspaceRoot, indexPatch);
+    }
+  }
+
   return {
     workspaceRoot,
-    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
+    job: enrichJob(latest, { maxProgressLines: options.maxProgressLines })
   };
 }
 

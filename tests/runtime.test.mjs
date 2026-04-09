@@ -1216,6 +1216,135 @@ test("status --wait times out cleanly when a job is still active", () => {
   assert.equal(payload.waitTimedOut, true);
 });
 
+test("status <job-id> does not rewrite updatedAt when persisted snapshot matches index", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const olderJobFile = path.join(jobsDir, "task-older.json");
+  fs.writeFileSync(
+    olderJobFile,
+    JSON.stringify(
+      {
+        id: "task-older",
+        status: "completed",
+        title: "Codex Task",
+        phase: "done",
+        pid: null,
+        summary: "Older completed task",
+        completedAt: "2026-03-18T15:31:00.000Z",
+        threadId: "thr_older",
+        turnId: "turn_older"
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-latest",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            phase: "done",
+            pid: null,
+            summary: "Newest completed task",
+            completedAt: "2026-03-18T15:40:00.000Z",
+            updatedAt: "2026-03-18T15:40:00.000Z"
+          },
+          {
+            id: "task-older",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            phase: "done",
+            pid: null,
+            summary: "Older completed task",
+            completedAt: "2026-03-18T15:31:00.000Z",
+            threadId: "thr_older",
+            turnId: "turn_older",
+            updatedAt: "2026-03-18T15:31:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  const before = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const beforeOlderUpdatedAt = before.jobs.find((job) => job.id === "task-older")?.updatedAt;
+
+  const result = run("node", [SCRIPT, "status", "task-older", "--json"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-older");
+  assert.equal(payload.job.status, "completed");
+
+  const after = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const afterOlder = after.jobs.find((job) => job.id === "task-older");
+  assert.equal(after.jobs[0]?.id, "task-latest", "read-only status must not reorder job recency");
+  assert.equal(afterOlder?.updatedAt, beforeOlderUpdatedAt, "read-only status must not rewrite updatedAt");
+});
+
+test("status --wait tolerates malformed per-job JSON while worker rewrites and falls back to index", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const jobFile = path.join(jobsDir, "task-live.json");
+  fs.writeFileSync(jobFile, "{\n  \"id\": \"task-live\",\n", "utf8");
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-live",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            summary: "Malformed job-file fallback",
+            createdAt: "2026-03-18T15:30:00.000Z",
+            startedAt: "2026-03-18T15:30:01.000Z",
+            updatedAt: "2026-03-18T15:30:02.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "status", "task-live", "--wait", "--timeout-ms", "25", "--json"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-live");
+  assert.equal(payload.job.status, "running");
+  assert.equal(payload.waitTimedOut, true);
+});
+
 test("status --wait marks dead-pid jobs failed instead of timing out", () => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);
@@ -1284,6 +1413,8 @@ test("status --wait marks dead-pid jobs failed instead of timing out", () => {
   const job = state.jobs.find((candidate) => candidate.id === "task-dead");
   assert.equal(job?.status, "failed");
   assert.equal(job?.pid, null);
+  assert.equal(job?.jobClass, "task");
+  assert.equal(job?.summary, "Investigate flaky test");
 
   const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
   assert.equal(stored.status, "failed");
