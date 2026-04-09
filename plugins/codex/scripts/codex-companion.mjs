@@ -289,6 +289,24 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 
+function getCurrentClaudeSessionId() {
+  return process.env[SESSION_ID_ENV] ?? null;
+}
+
+function filterJobsForCurrentClaudeSession(jobs) {
+  const sessionId = getCurrentClaudeSessionId();
+  if (!sessionId) {
+    return jobs;
+  }
+  return jobs.filter((job) => job.sessionId === sessionId);
+}
+
+function findLatestResumableTaskJob(jobs) {
+  return jobs
+    .filter((job) => job.jobClass === "task" && job.status === "completed")
+    .find((job) => job.threadId != null);
+}
+
 function normalizeTrackedPid(pid) {
   const numeric = Number(pid);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
