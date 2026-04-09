@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 
 export const ROUTING_INTENT_ENV = "RUST_VERIFICATION_PRESERVE_ROUTING_ENV";
+// Keep exact-match entries uppercase because keys are normalized before lookup.
 const SCRUBBED_ENV_EXACT_KEYS = new Set([
   "RUST_VERIFICATION_ROOT_BASE",
   "RUST_VERIFICATION_REAL_CARGO",

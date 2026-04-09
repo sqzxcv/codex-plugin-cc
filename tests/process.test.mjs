@@ -41,6 +41,25 @@ test("sanitizeChildEnv strips scrubbed keys case-insensitively", () => {
   });
 });
 
+test("sanitizeChildEnv does not mutate its input", () => {
+  const input = {
+    KEEP: "ok",
+    CARGO_TARGET_DIR: "/tmp/target",
+    RUST_VERIFICATION_PRESERVE_ROUTING_ENV: "1"
+  };
+
+  const output = sanitizeChildEnv(input);
+
+  assert.deepEqual(input, {
+    KEEP: "ok",
+    CARGO_TARGET_DIR: "/tmp/target",
+    RUST_VERIFICATION_PRESERVE_ROUTING_ENV: "1"
+  });
+  assert.deepEqual(output, {
+    KEEP: "ok"
+  });
+});
+
 test("sanitizeChildEnv treats null like inherited process env", () => {
   const originalKeep = process.env.TEST_NULL_FALLBACK_KEEP;
   const originalTarget = process.env.CARGO_TARGET_DIR;
