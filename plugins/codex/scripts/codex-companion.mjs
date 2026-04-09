@@ -302,7 +302,7 @@ function reconcileDeadPidDuringWait(cwd, reference, snapshot) {
   try {
     const didFail = markDeadPidJobFailed(snapshot.workspaceRoot, snapshot.job.id, trackedPid);
     if (!didFail) {
-      return snapshot;
+      return buildSingleJobSnapshot(cwd, reference);
     }
   } catch (error) {
     // Never let reconciliation errors crash the poll loop.
@@ -310,7 +310,7 @@ function reconcileDeadPidDuringWait(cwd, reference, snapshot) {
       snapshot.job.logFile ?? null,
       `Dead-PID reconciliation skipped due to unexpected error: ${error instanceof Error ? error.message : String(error)}`
     );
-    return snapshot;
+    return buildSingleJobSnapshot(cwd, reference);
   }
   return buildSingleJobSnapshot(cwd, reference);
 }
