@@ -11,9 +11,11 @@ const SCRUBBED_ENV_EXACT_KEYS = new Set([
 const SCRUBBED_ENV_PATTERN = /^CARGO_.*TARGET_DIR$/;
 
 export function sanitizeChildEnv(env = process.env) {
-  const childEnv = { ...(env ?? {}) };
+  const sourceEnv = env ?? process.env;
+  const childEnv = { ...sourceEnv };
   for (const key of Object.keys(childEnv)) {
-    if (SCRUBBED_ENV_PATTERN.test(key) || SCRUBBED_ENV_EXACT_KEYS.has(key)) {
+    const normalizedKey = key.toUpperCase();
+    if (SCRUBBED_ENV_PATTERN.test(normalizedKey) || SCRUBBED_ENV_EXACT_KEYS.has(normalizedKey)) {
       delete childEnv[key];
     }
   }
