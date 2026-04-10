@@ -12,6 +12,7 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/codex:run-skill` to invoke a Codex skill through the shared runtime
 
 ## Requirements
 
@@ -201,6 +202,26 @@ Examples:
 /codex:cancel
 /codex:cancel task-abc123
 ```
+
+### `/codex:run-skill`
+
+Runs a Codex skill through the shared runtime. Use it to invoke any skill installed in your local Codex environment.
+
+Use it when you want:
+
+- to invoke a specific Codex skill from inside Claude Code
+- to list the skills available in your local Codex installation
+
+Examples:
+
+```bash
+/codex:run-skill --list
+/codex:run-skill --skill ui-ux-pro-max design a landing page
+/codex:run-skill --skill xlfoundry-plan --background 规划一个新功能
+/codex:run-skill --skill my-write-skill --write create new files
+```
+
+This command reads the local skill definition from `~/.codex/skills/<name>/SKILL.md`, includes the skill directory path for access to bundled resources (scripts, references, etc.), and sends everything to Codex along with your prompt. Results are returned to Claude Code. Use `--write` to allow the skill to modify files (default is read-only).
 
 ### `/codex:setup`
 

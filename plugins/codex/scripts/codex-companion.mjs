@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -51,6 +52,7 @@ import {
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { listAvailableSkills, validateSkill } from "./lib/skills.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -80,7 +82,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  node scripts/codex-companion.mjs run-skill [--skill <name>] [--list] [prompt]"
     ].join("\n")
   );
 }
@@ -555,8 +558,8 @@ function renderQueuedTaskLaunch(payload) {
 }
 
 function getJobKindLabel(kind, jobClass) {
-  if (kind === "adversarial-review") {
-    return "adversarial-review";
+  if (kind) {
+    return kind;
   }
   return jobClass === "review" ? "review" : "rescue";
 }
@@ -792,6 +795,108 @@ async function handleTask(argv) {
   );
 }
 
+async function executeSkillRun(request) {
+  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const result = await runAppServerTurn(workspaceRoot, {
+    prompt: request.prompt,
+    onProgress: request.onProgress,
+    persistThread: false,
+    sandbox: request.write ? "workspace-write" : "read-only"
+  });
+
+  const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const failureMessage = result.error?.message ?? result.stderr ?? "";
+  const rendered = rawOutput || failureMessage || "Codex did not return a final message.\n";
+  const payload = {
+    status: result.status,
+    threadId: result.threadId,
+    rawOutput
+  };
+
+  return {
+    exitStatus: result.status,
+    threadId: result.threadId,
+    turnId: result.turnId,
+    payload,
+    rendered,
+    summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `Codex skill ${request.skillName} finished.`)),
+    jobTitle: `Run Codex skill: ${request.skillName}`,
+    jobClass: "skill"
+  };
+}
+
+async function handleRunSkill(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["skill", "cwd"],
+    booleanOptions: ["list", "wait", "background", "json", "write"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+
+  if (options.list) {
+    const skills = listAvailableSkills(codexHome);
+    if (skills.length === 0) {
+      outputCommandResult({ skills: [] }, "No Codex skills found in ~/.codex/skills/.", options.json);
+      return;
+    }
+    const lines = skills.map((s) => `  ${s.name}${s.description ? ` — ${s.description}` : ""}`);
+    outputCommandResult({ skills }, `Available Codex skills:\n${lines.join("\n")}`, options.json);
+    return;
+  }
+
+  const skillName = options.skill;
+  if (!skillName) {
+    throw new Error("Specify a skill with --skill <name> or use --list to see available skills.");
+  }
+
+  ensureCodexAvailable(cwd);
+  const { entry: skillEntry, filePath: skillFilePath } = validateSkill(codexHome, skillName);
+  const skillContent = skillFilePath ? fs.readFileSync(skillFilePath, "utf8") : "";
+  const skillDir = skillFilePath ? path.dirname(skillFilePath) : null;
+
+  const userPrompt = positionals.join(" ").trim();
+  const skillDirNote = skillDir
+    ? `Additional skill resources (scripts, references, etc.) are located at: ${skillDir}\nYou may read files from this directory as needed.\n`
+    : "";
+  const parts = [
+    `Execute the "${skillName}" Codex skill using the definition below. Do not run shell commands to search for skill files elsewhere.`,
+    "",
+    skillDirNote,
+    "## Skill Definition",
+    "",
+    skillContent,
+    "",
+    "## User Request",
+    "",
+    userPrompt || "(no additional request — execute the skill with default behavior)"
+  ];
+  const prompt = parts.join("\n");
+
+  const job = createCompanionJob({
+    prefix: "run-skill",
+    kind: "run-skill",
+    title: `Run Codex skill: ${skillName}`,
+    workspaceRoot,
+    jobClass: "skill",
+    summary: userPrompt || `Run skill ${skillName}`
+  });
+
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeSkillRun({
+        cwd,
+        skillName,
+        prompt,
+        write: options.write,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd", "job-id"]
@@ -999,6 +1104,9 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "run-skill":
+      await handleRunSkill(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);

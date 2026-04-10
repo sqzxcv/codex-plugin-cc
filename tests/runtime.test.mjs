@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -2120,4 +2121,165 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+// --- run-skill failure path tests ---
+
+test("run-skill --list outputs no skills message when skills directory is empty", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(binDir, "fake-codex-home");
+  fs.mkdirSync(path.join(codexHome, "skills"), { recursive: true });
+
+  const result = run("node", [SCRIPT, "run-skill", "--list", "--cwd", repo], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_HOME: codexHome }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No Codex skills found/);
+});
+
+test("run-skill requires --skill or --list", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "run-skill", "--cwd", repo], {
+    cwd: repo,
+    env: process.env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Specify a skill with --skill/);
+});
+
+test("run-skill reports error when Codex is not available", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(os.tmpdir(), "codex-plugin-test-nocodex-" + process.pid);
+  fs.mkdirSync(path.join(codexHome, "skills", "test-skill"), { recursive: true });
+  fs.writeFileSync(path.join(codexHome, "skills", "test-skill", "SKILL.md"), "---\ndescription: test\n---\n\nTest\n");
+
+  const emptyBin = makeTempDir();
+  const result = run(process.execPath, [SCRIPT, "run-skill", "--skill", "test-skill", "--cwd", repo, "do something"], {
+    cwd: repo,
+    env: { ...process.env, PATH: emptyBin, CODEX_HOME: codexHome }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Codex CLI is not installed/);
+});
+
+test("run-skill reports auth error when Codex auth is expired", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "auth-run-fails");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(binDir, "fake-codex-home");
+  fs.mkdirSync(path.join(codexHome, "skills", "test-skill"), { recursive: true });
+  fs.writeFileSync(path.join(codexHome, "skills", "test-skill", "SKILL.md"), "---\ndescription: test\n---\n\nTest\n");
+
+  const result = run("node", [SCRIPT, "run-skill", "--skill", "test-skill", "--cwd", repo, "check auth"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_HOME: codexHome }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /authentication expired; run codex login/);
+});
+
+test("run-skill reports error for non-existent skill", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(binDir, "fake-codex-home");
+  fs.mkdirSync(path.join(codexHome, "skills"), { recursive: true });
+
+  const result = run("node", [SCRIPT, "run-skill", "--skill", "nonexistent", "--cwd", repo, "test"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_HOME: codexHome }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Skill "nonexistent" not found/);
+});
+
+test("run-skill executes successfully via app server turn/start", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(binDir, "fake-codex-home");
+  const skillDir = path.join(codexHome, "skills", "test-skill");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\ndescription: A test skill\n---\n# Test Skill\n");
+
+  const result = run("node", [SCRIPT, "run-skill", "--skill", "test-skill", "--cwd", repo, "do something"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_HOME: codexHome }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Handled the requested task/);
+
+  // Verify prompt includes skill directory path for bundled resource access
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /skill.*resources.*located at/);
+  assert.match(fakeState.lastTurnStart.prompt, new RegExp(skillDir.replace(/[/\\]/g, "[/\\\\]")));
+  // Default sandbox is read-only, ephemeral thread
+  assert.equal(fakeState.lastThreadStart.sandbox, "read-only");
+  assert.equal(fakeState.lastThreadStart.ephemeral, true);
+});
+
+test("run-skill --write passes workspace-write sandbox", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const codexHome = path.join(binDir, "fake-codex-home");
+  const skillDir = path.join(codexHome, "skills", "write-skill");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\ndescription: A write skill\n---\n# Write Skill\n");
+
+  const result = run("node", [SCRIPT, "run-skill", "--skill", "write-skill", "--write", "--cwd", repo, "create a file"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_HOME: codexHome }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastThreadStart.sandbox, "workspace-write");
 });
