@@ -291,3 +291,40 @@ test("collectTestCommandContext scopes direct JS test matches to the nearest pac
     }
   ]);
 });
+
+test("collectTestCommandContext skips deleted source files when inferring targets", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.mkdirSync(path.join(cwd, "tests"));
+  fs.writeFileSync(path.join(cwd, "README.md"), "# Sample project\n");
+  fs.writeFileSync(path.join(cwd, "src", "old.js"), "export const value = 1;\n");
+  fs.writeFileSync(path.join(cwd, "tests", "old.test.js"), "test('old', () => {});\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.rmSync(path.join(cwd, "src", "old.js"));
+
+  assert.throws(() => collectTestCommandContext(cwd), /Unable to infer test targets from changed files/i);
+});
+
+test("collectTestCommandContext preserves source subdirectories for new Python tests", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src", "pkg"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tests", "pkg"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# python project\n");
+  fs.writeFileSync(path.join(cwd, "tests", "pkg", "test_existing.py"), "def test_existing():\n    assert True\n");
+  fs.writeFileSync(path.join(cwd, "src", "pkg", "foo.py"), "VALUE = 1\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "pkg", "foo.py"), "VALUE = 2\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "src/pkg/foo.py",
+      targets: [{ path: "tests/pkg/test_foo.py", action: "create" }]
+    }
+  ]);
+});

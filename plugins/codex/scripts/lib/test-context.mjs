@@ -318,7 +318,8 @@ function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
     if (!preferredRoot) {
       return [];
     }
-    return [{ path: path.posix.join(preferredRoot, `test_${stem}.py`), action: "create" }];
+    const strippedParts = relativeDirUnderSourceRoot(normalized);
+    return [{ path: path.posix.join(preferredRoot, ...strippedParts, `test_${stem}.py`), action: "create" }];
   }
 
   if ([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"].includes(extension)) {
@@ -335,9 +336,12 @@ function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
   return [];
 }
 
-function inferTestPlan(changedFiles, testFiles, primaryLocations) {
+function inferTestPlan(repoRoot, changedFiles, testFiles, primaryLocations) {
   const entries = [];
   for (const relativePath of changedFiles) {
+    if (!fs.existsSync(path.join(repoRoot, relativePath))) {
+      continue;
+    }
     if (isTestFile(relativePath)) {
       entries.push({
         sourcePath: relativePath,
@@ -464,7 +468,7 @@ export function collectTestCommandContext(cwd, options = {}) {
   }
 
   const productionFiles = reviewContext.changedFiles.filter((relativePath) => !isTestFile(relativePath));
-  const testPlanEntries = inferTestPlan(productionFiles, testFiles, primaryLocations);
+  const testPlanEntries = inferTestPlan(repoRoot, productionFiles, testFiles, primaryLocations);
   if (testPlanEntries.length === 0) {
     throw new Error("Unable to infer test targets from changed files.");
   }
