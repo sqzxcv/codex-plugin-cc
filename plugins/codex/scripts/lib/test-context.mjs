@@ -47,37 +47,40 @@ function walkRepoFiles(rootDir, options = {}) {
       const absolutePath = path.join(current.absoluteDir, entry.name);
       const relativePath = current.relativeDir ? path.posix.join(current.relativeDir, entry.name) : entry.name;
       const normalizedName = entry.name.toLowerCase();
-      if (entry.isDirectory() || entry.isSymbolicLink()) {
+      if (entry.isDirectory()) {
         if (WALK_SKIP_DIRS.has(normalizedName) || current.depth >= maxDepth) {
           continue;
         }
+        let directoryKey;
+        try {
+          directoryKey = fs.realpathSync.native(absolutePath);
+        } catch {
+          directoryKey = absolutePath;
+        }
+        if (visitedDirectories.has(directoryKey)) {
+          continue;
+        }
+        visitedDirectories.add(directoryKey);
+        queue.push({
+          absoluteDir: absolutePath,
+          relativeDir: relativePath,
+          depth: current.depth + 1
+        });
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
         let stat;
         try {
           stat = fs.statSync(absolutePath);
         } catch {
           continue;
         }
-        if (stat.isDirectory()) {
-          let directoryKey;
-          try {
-            directoryKey = fs.realpathSync.native(absolutePath);
-          } catch {
-            directoryKey = absolutePath;
-          }
-          if (visitedDirectories.has(directoryKey)) {
-            continue;
-          }
-          visitedDirectories.add(directoryKey);
-          queue.push({
-            absoluteDir: absolutePath,
-            relativeDir: relativePath,
-            depth: current.depth + 1
-          });
-          continue;
-        }
-        if (entry.isSymbolicLink() && stat.isFile()) {
+        if (stat.isFile()) {
           results.push(relativePath);
         }
+        // Skip symlinked directories for now: following them can escape repoRoot
+        // and pull unrelated files into /codex:test. If we need this later,
+        // constrain traversal to realpaths that still stay under repoRoot.
         continue;
       }
       if (entry.isFile()) {

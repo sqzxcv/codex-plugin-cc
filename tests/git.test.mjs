@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { collectReviewContext, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import { collectTestCommandContext } from "../plugins/codex/scripts/lib/test-context.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
 test("resolveReviewTarget prefers working tree when repo is dirty", () => {
@@ -180,4 +181,21 @@ test("collectReviewContext keeps untracked file content in lightweight working t
   assert.doesNotMatch(context.content, /TRACKED_MARKER_[AB]/);
   assert.match(context.content, /## Untracked Files/);
   assert.match(context.content, /UNTRACKED_RISK_MARKER/);
+});
+
+test("collectTestCommandContext ignores symlinked test directories outside the repo", () => {
+  const cwd = makeTempDir();
+  const externalTests = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"));
+  fs.writeFileSync(path.join(cwd, "README.md"), "# Sample project\n");
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 1;\n");
+  fs.mkdirSync(path.join(externalTests, "nested"));
+  fs.writeFileSync(path.join(externalTests, "nested", "app.test.mjs"), "import test from 'node:test';\n");
+  fs.symlinkSync(externalTests, path.join(cwd, "tests"));
+  run("git", ["add", "README.md", "src/app.js", "tests"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 2;\n");
+
+  assert.throws(() => collectTestCommandContext(cwd), /No test layout detected/i);
 });
