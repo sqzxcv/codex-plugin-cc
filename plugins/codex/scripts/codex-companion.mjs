@@ -253,6 +253,7 @@ function buildWriteTestsPrompt(context) {
   return interpolateTemplate(template, {
     TARGET_LABEL: context.target.label,
     PROJECT_GUIDANCE: context.renderedGuidance,
+    DIFF_COLLECTION_GUIDANCE: context.reviewContext.collectionGuidance,
     DIFF_CONTEXT: context.reviewContext.content,
     TEST_LAYOUT: context.renderedTestLayout,
     TEST_PLAN: context.renderedPlan,

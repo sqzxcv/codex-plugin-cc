@@ -321,6 +321,39 @@ test("test command surfaces repository test commands in the prompt when it can i
   assert.match(state.lastTurnStart.prompt, /npm test/);
 });
 
+test("test command includes self-collect guidance when diff context is downgraded", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.mkdirSync(path.join(repo, "tests"));
+  for (const name of ["a.js", "b.js", "c.js"]) {
+    fs.writeFileSync(path.join(repo, "src", name), `export const value = "${name}-v1";\n`);
+    fs.writeFileSync(path.join(repo, "tests", `${name.replace(".js", ".test.mjs")}`), "import test from \"node:test\";\n");
+  }
+  fs.writeFileSync(path.join(repo, "README.md"), "# Demo\n");
+  run("git", ["add", "README.md", "src/a.js", "src/b.js", "src/c.js", "tests/a.test.mjs", "tests/b.test.mjs", "tests/c.test.mjs"], {
+    cwd: repo
+  });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "a.js"), 'export const value = "PROMPT_SELF_COLLECT_A";\n');
+  fs.writeFileSync(path.join(repo, "src", "b.js"), 'export const value = "PROMPT_SELF_COLLECT_B";\n');
+  fs.writeFileSync(path.join(repo, "src", "c.js"), 'export const value = "PROMPT_SELF_COLLECT_C";\n');
+
+  const result = run("node", [SCRIPT, "test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.match(state.lastTurnStart.prompt, /lightweight summary/i);
+  assert.match(state.lastTurnStart.prompt, /read-only git commands/i);
+  assert.doesNotMatch(state.lastTurnStart.prompt, /PROMPT_SELF_COLLECT_[ABC]/);
+});
+
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

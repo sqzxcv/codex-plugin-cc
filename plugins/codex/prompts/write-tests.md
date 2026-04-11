@@ -47,6 +47,10 @@ If the repository does not expose a clear test command, run the narrowest comman
 {{PROJECT_GUIDANCE}}
 </project_guidance>
 
+<diff_collection_guidance>
+{{DIFF_COLLECTION_GUIDANCE}}
+</diff_collection_guidance>
+
 <diff_context>
 {{DIFF_CONTEXT}}
 </diff_context>
