@@ -241,3 +241,53 @@ test("collectTestCommandContext matches javascript test stems by boundary", () =
     }
   ]);
 });
+
+test("collectTestCommandContext creates JS tests under the nearest package-local test root", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "packages", "a", "tests"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "b", "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "b", "tests"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# monorepo\n");
+  fs.writeFileSync(path.join(cwd, "packages", "a", "tests", "shared.test.js"), "test('a', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "packages", "b", "tests", "existing.test.js"), "test('b', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "packages", "b", "src", "new.js"), "export const value = 1;\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "packages", "b", "src", "new.js"), "export const value = 2;\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "packages/b/src/new.js",
+      targets: [{ path: "packages/b/tests/new.test.js", action: "create" }]
+    }
+  ]);
+});
+
+test("collectTestCommandContext scopes direct JS test matches to the nearest package", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "packages", "a", "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "a", "tests"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "b", "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "b", "tests"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# monorepo\n");
+  fs.writeFileSync(path.join(cwd, "packages", "a", "src", "id.js"), "export const id = 'a';\n");
+  fs.writeFileSync(path.join(cwd, "packages", "a", "tests", "id.test.js"), "test('a', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "packages", "b", "src", "id.js"), "export const id = 'b';\n");
+  fs.writeFileSync(path.join(cwd, "packages", "b", "tests", "id.test.js"), "test('b', () => {});\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "packages", "b", "src", "id.js"), "export const id = 'b2';\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "packages/b/src/id.js",
+      targets: [{ path: "packages/b/tests/id.test.js", action: "update" }]
+    }
+  ]);
+});

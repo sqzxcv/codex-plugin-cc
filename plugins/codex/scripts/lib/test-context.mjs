@@ -203,14 +203,85 @@ function inferPreferredJavascriptTestExtension(testFiles) {
   return ranked[0]?.[0] ?? ".js";
 }
 
+function longestSharedPrefixLength(left, right) {
+  const length = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < length && left[index] === right[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function getPrimaryLocationScopeParts(location) {
+  const parts = location.replace(/\\/g, "/").split("/");
+  const testDirIndex = parts.findIndex((part) => TEST_DIR_NAMES.has(part.toLowerCase()));
+  return testDirIndex >= 0 ? parts.slice(0, testDirIndex) : parts;
+}
+
+function rankPrimaryLocationsForSource(relativePath, primaryLocations) {
+  const normalized = relativePath.replace(/\\/g, "/");
+  const sourceDir = path.posix.dirname(normalized);
+  const sourceDirParts = sourceDir === "." ? [] : sourceDir.split("/");
+  const ranked = primaryLocations
+    .map((location) => {
+      const scopeParts = getPrimaryLocationScopeParts(location);
+      const sharedPrefixLength = longestSharedPrefixLength(scopeParts, sourceDirParts);
+      const scopeMatchesSource =
+        scopeParts.length <= sourceDirParts.length && scopeParts.every((part, index) => sourceDirParts[index] === part);
+      return {
+        location,
+        scopeParts,
+        sharedPrefixLength,
+        scopeMatchesSource
+      };
+    })
+    .sort((left, right) => {
+      return (
+        Number(right.scopeMatchesSource) - Number(left.scopeMatchesSource) ||
+        right.sharedPrefixLength - left.sharedPrefixLength ||
+        right.scopeParts.length - left.scopeParts.length ||
+        left.location.localeCompare(right.location)
+      );
+    });
+  if (ranked.length === 0) {
+    return [];
+  }
+  const best = ranked[0];
+  return ranked
+    .filter(
+      (location) =>
+        location.scopeMatchesSource === best.scopeMatchesSource &&
+        location.sharedPrefixLength === best.sharedPrefixLength &&
+        location.scopeParts.length === best.scopeParts.length
+    )
+    .map((location) => location.location);
+}
+
+function relativeDirUnderSourceRoot(relativePath) {
+  const normalized = relativePath.replace(/\\/g, "/");
+  const dirName = path.posix.dirname(normalized);
+  if (dirName === ".") {
+    return [];
+  }
+  const dirParts = dirName.split("/");
+  const sourceRootIndex = dirParts.findIndex((part) => SOURCE_ROOT_NAMES.has(part.toLowerCase()));
+  if (sourceRootIndex >= 0) {
+    return dirParts.slice(sourceRootIndex + 1);
+  }
+  return dirParts;
+}
+
 function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
   const normalized = relativePath.replace(/\\/g, "/");
   const baseName = path.basename(normalized).toLowerCase();
   const stem = fileStem(normalized);
   const loweredStem = stem.toLowerCase();
   const extension = extnamePreservingDeclaration(normalized).toLowerCase();
-  const dirName = path.posix.dirname(normalized);
   const exactJavascriptTestPattern = new RegExp(`^${escapeRegExp(loweredStem)}\\.(?:test|spec)\\.`);
+  // In monorepos, keep both direct matches and new test targets inside the
+  // nearest package-local test root so /codex:test does not spill across packages.
+  const rankedPrimaryLocations = rankPrimaryLocationsForSource(normalized, primaryLocations);
+  const preferredRoots = new Set(rankedPrimaryLocations);
 
   const directMatches = testFiles.filter((candidate) => {
     const candidateBaseName = path.basename(candidate).toLowerCase();
@@ -229,15 +300,21 @@ function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
     return false;
   });
   if (directMatches.length > 0) {
-    return uniqueSorted(directMatches).map((candidate) => ({ path: candidate, action: "update" }));
+    const scopedMatches =
+      preferredRoots.size === 0
+        ? directMatches
+        : directMatches.filter((candidate) => [...preferredRoots].some((root) => candidate === root || candidate.startsWith(`${root}/`)));
+    const effectiveMatches = scopedMatches.length > 0 ? scopedMatches : directMatches;
+    return uniqueSorted(effectiveMatches).map((candidate) => ({ path: candidate, action: "update" }));
   }
 
   if (extension === ".go") {
+    const dirName = path.posix.dirname(normalized);
     return [{ path: path.posix.join(dirName, `${stem}_test.go`), action: "create" }];
   }
 
   if (extension === ".py") {
-    const preferredRoot = primaryLocations.find((location) => TEST_DIR_NAMES.has(path.posix.basename(location).toLowerCase()));
+    const preferredRoot = rankedPrimaryLocations[0];
     if (!preferredRoot) {
       return [];
     }
@@ -245,16 +322,12 @@ function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
   }
 
   if ([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"].includes(extension)) {
-    const preferredRoot =
-      primaryLocations.find((location) => TEST_DIR_NAMES.has(path.posix.basename(location).toLowerCase())) ??
-      primaryLocations[0];
+    const preferredRoot = rankedPrimaryLocations[0];
     if (!preferredRoot) {
       return [];
     }
     const preferredExtension = inferPreferredJavascriptTestExtension(testFiles) || extension || ".js";
-    const relativeParts = normalized.split("/");
-    const withoutFile = relativeParts.slice(0, -1);
-    const strippedParts = SOURCE_ROOT_NAMES.has(withoutFile[0]?.toLowerCase()) ? withoutFile.slice(1) : withoutFile;
+    const strippedParts = relativeDirUnderSourceRoot(normalized);
     const candidateDir = path.posix.join(preferredRoot, ...strippedParts);
     return [{ path: path.posix.join(candidateDir, `${stem}.test${preferredExtension}`), action: "create" }];
   }
