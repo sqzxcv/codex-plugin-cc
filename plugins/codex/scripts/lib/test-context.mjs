@@ -264,6 +264,9 @@ function rankPrimaryLocationsForSource(relativePath, primaryLocations) {
     return [];
   }
   const best = ranked[0];
+  if (!best.scopeMatchesSource) {
+    return [];
+  }
   return ranked
     .filter(
       (location) =>

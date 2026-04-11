@@ -356,3 +356,20 @@ test("collectTestCommandContext caps guidance files in large monorepos", () => {
   );
   assert.ok(!context.guidanceFiles.some((file) => file.path === "packages/pkg-9/README.md"));
 });
+
+test("collectTestCommandContext fails closed when no package-local test root matches the source", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "tools"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "a", "tests"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "b", "tests"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# monorepo\n");
+  fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 1;\n");
+  fs.writeFileSync(path.join(cwd, "packages", "a", "tests", "a.test.js"), "test('a', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "packages", "b", "tests", "b.test.js"), "test('b', () => {});\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 2;\n");
+
+  assert.throws(() => collectTestCommandContext(cwd), /Unable to infer test targets from changed files/i);
+});

@@ -45,7 +45,9 @@ planning must ignore source paths that no longer exist in the working tree.
 In monorepos, test planning should stay inside the package or module that owns
 the changed source file. When a direct match is missing, new test targets should
 be created under the nearest compatible test root instead of the first `tests/`
-directory discovered anywhere in the repository.
+directory discovered anywhere in the repository. If no detected test root
+actually belongs to the changed source's package, `/codex:test` should fail
+closed instead of selecting the closest-looking package by shared path prefix.
 
 2. Scope direct matches by locality, not basename alone.
 
