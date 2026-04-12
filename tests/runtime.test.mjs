@@ -436,6 +436,73 @@ test("task-resume-candidate returns the latest rescue thread from the current se
   assert.equal(payload.candidate.threadId, "thr_current");
 });
 
+test("task-resume-candidate includes failed/cancelled tasks in resumable lookup", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-cancelled-no-thread",
+            status: "cancelled",
+            title: "Codex Task",
+            jobClass: "task",
+            sessionId: "sess-current",
+            summary: "Cancelled task without thread",
+            updatedAt: "2026-03-24T20:10:00.000Z"
+          },
+          {
+            id: "task-failed-current",
+            status: "failed",
+            title: "Codex Task",
+            jobClass: "task",
+            sessionId: "sess-current",
+            threadId: "thr_failed_current",
+            summary: "Latest failed task",
+            updatedAt: "2026-03-24T20:09:00.000Z"
+          },
+          {
+            id: "task-completed-older",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            sessionId: "sess-current",
+            threadId: "thr_completed_older",
+            summary: "Older completed task",
+            updatedAt: "2026-03-24T20:08:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "task-resume-candidate", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CODEX_COMPANION_SESSION_ID: "sess-current"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.available, true);
+  assert.equal(payload.sessionId, "sess-current");
+  assert.equal(payload.candidate.id, "task-failed-current");
+  assert.equal(payload.candidate.status, "failed");
+  assert.equal(payload.candidate.threadId, "thr_failed_current");
+});
+
 test("task --resume-last does not resume a task from another Claude session", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

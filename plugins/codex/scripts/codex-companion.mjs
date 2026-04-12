@@ -303,7 +303,7 @@ function filterJobsForCurrentClaudeSession(jobs) {
 
 function findLatestResumableTaskJob(jobs) {
   return jobs
-    .filter((job) => job.jobClass === "task" && job.status === "completed")
+    .filter((job) => job.jobClass === "task" && !isActiveJobStatus(job.status))
     .find((job) => job.threadId != null);
 }
 
