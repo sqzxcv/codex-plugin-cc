@@ -3,12 +3,11 @@
  * Kept in a separate file to minimize merge surface with upstream.
  */
 
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runAppServerTurn, parseStructuredOutput, readOutputSchema } from "./codex.mjs";
 
-const REVIEW_SCHEMA_PATH = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  "../../schemas/review-output.schema.json"
+const REVIEW_SCHEMA_PATH = fileURLToPath(
+  new URL("../../schemas/review-output.schema.json", import.meta.url)
 );
 
 /**
@@ -100,13 +99,26 @@ async function runSpecialistPass(repoRoot, basePrompt, specialist, options = {})
 }
 
 /**
+ * Validate that a parsed specialist result has the minimum required shape.
+ * @param {object} parsed
+ * @returns {boolean}
+ */
+function isValidSpecialistResult(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  if (typeof parsed.verdict !== "string" || !parsed.verdict.trim()) return false;
+  if (!Array.isArray(parsed.findings)) return false;
+  return true;
+}
+
+/**
  * Reduce individual verdicts into a single merged verdict.
- * any needs-attention -> needs-attention, else approve.
- * @param {Array<{verdict: string|null}>} results
+ * Any failed pass or needs-attention -> needs-attention, else approve.
+ * @param {Array<{verdict: string|null, failed: boolean}>} results
  * @returns {string}
  */
 function reduceVerdicts(results) {
   for (const r of results) {
+    if (r.failed) return "needs-attention";
     if (r.verdict === "needs-attention") return "needs-attention";
   }
   return "approve";
@@ -137,8 +149,9 @@ export async function runFanOut(repoRoot, basePrompt, options = {}) {
     )
   );
 
-  const succeeded = passes.filter((p) => p.parsed && !p.error);
-  const failed = passes.filter((p) => !p.parsed || p.error);
+  // Validate each pass: must have a well-formed result, not just parseable JSON
+  const succeeded = passes.filter((p) => p.parsed && !p.error && isValidSpecialistResult(p.parsed));
+  const failed = passes.filter((p) => !p.parsed || p.error || !isValidSpecialistResult(p.parsed));
 
   // If 3+ passes fail, report overall failure
   if (failed.length >= 3) {
@@ -157,10 +170,11 @@ export async function runFanOut(repoRoot, basePrompt, options = {}) {
     allFindings.push(...tagFindings(pass.parsed, pass.specialist.name));
   }
 
-  // Reduce verdicts
-  const verdictInputs = succeeded.map((p) => ({
-    verdict: p.parsed?.verdict ?? "approve"
-  }));
+  // Reduce verdicts -- any failed pass forces needs-attention
+  const verdictInputs = [
+    ...succeeded.map((p) => ({ verdict: p.parsed?.verdict ?? "approve", failed: false })),
+    ...failed.map(() => ({ verdict: null, failed: true }))
+  ];
   const verdict = reduceVerdicts(verdictInputs);
 
   // Merge next_steps
