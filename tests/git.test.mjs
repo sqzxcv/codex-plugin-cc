@@ -200,6 +200,26 @@ test("collectTestCommandContext ignores symlinked test directories outside the r
   assert.throws(() => collectTestCommandContext(cwd), /No test layout detected/i);
 });
 
+test("collectTestCommandContext ignores nested worktree directories inside the workspace", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# repo\n");
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 1;\n");
+
+  const nestedWorktreeDir = path.join(cwd, ".claude", "worktrees", "agent-test");
+  fs.mkdirSync(nestedWorktreeDir, { recursive: true });
+  initGitRepo(nestedWorktreeDir);
+  fs.mkdirSync(path.join(nestedWorktreeDir, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(nestedWorktreeDir, "tests", "app.test.js"), "test('nested', () => {});\n");
+
+  run("git", ["add", "README.md", "src/app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 2;\n");
+
+  assert.throws(() => collectTestCommandContext(cwd), /No test layout detected/i);
+});
+
 test("collectTestCommandContext ignores symlinked guidance files outside the repo", () => {
   const cwd = makeTempDir();
   const externalDir = makeTempDir();

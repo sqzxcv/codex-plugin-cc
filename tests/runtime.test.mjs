@@ -579,6 +579,64 @@ test("task-resume-candidate returns the latest rescue thread from the current se
   assert.equal(payload.candidate.threadId, "thr_current");
 });
 
+test("task-resume-candidate ignores completed /codex:test jobs", () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "test-current",
+            kind: "test",
+            status: "completed",
+            title: "Codex Test",
+            jobClass: "task",
+            sessionId: "sess-current",
+            threadId: "thr_test",
+            summary: "Write tests for working tree diff",
+            updatedAt: "2026-03-24T20:00:00.000Z"
+          },
+          {
+            id: "task-current",
+            kind: "task",
+            status: "completed",
+            title: "Codex Task",
+            jobClass: "task",
+            sessionId: "sess-current",
+            threadId: "thr_task",
+            summary: "Investigate flaky rescue thread",
+            updatedAt: "2026-03-24T19:55:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "task-resume-candidate", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CODEX_COMPANION_SESSION_ID: "sess-current"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.available, true);
+  assert.equal(payload.candidate.id, "task-current");
+  assert.equal(payload.candidate.threadId, "thr_task");
+});
+
 test("task --resume-last does not resume a task from another Claude session", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

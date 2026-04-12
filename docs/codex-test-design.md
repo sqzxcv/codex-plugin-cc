@@ -4,6 +4,10 @@ This note summarizes the stable design constraints behind `/codex:test`.
 It is intended for maintainers who need to evolve the test-planning pipeline
 without re-learning the failure modes from past review cycles.
 
+A useful review question for this command is: "Could uncertainty here cause
+`/codex:test` to write tests in the wrong place, or collect the wrong context?"
+Most of the constraints below exist to keep the answer to that question "no."
+
 ## Core Principles
 
 1. Fail closed when required context is missing.
@@ -11,6 +15,8 @@ without re-learning the failure modes from past review cycles.
 `/codex:test` should stop rather than guess when it cannot gather enough
 repository context. Missing project guidance, missing test layout, or missing
 test targets should be treated as hard failures instead of soft fallbacks.
+When uncertainty would otherwise push the command toward the wrong context or
+the wrong target file, failing closed is the intended behavior.
 
 2. Keep repository context inside the repository boundary.
 

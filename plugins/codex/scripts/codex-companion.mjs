@@ -315,11 +315,15 @@ function filterJobsForCurrentClaudeSession(jobs) {
   return jobs.filter((job) => job.sessionId === sessionId);
 }
 
+function isResumableRescueTask(job) {
+  return job.jobClass === "task" && job.kind !== "test";
+}
+
 function findLatestResumableTaskJob(jobs) {
   return (
     jobs.find(
       (job) =>
-        job.jobClass === "task" &&
+        isResumableRescueTask(job) &&
         job.threadId &&
         job.status !== "queued" &&
         job.status !== "running"
@@ -350,7 +354,7 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const sessionId = getCurrentClaudeSessionId();
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
-  const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
+  const activeTask = visibleJobs.find((job) => isResumableRescueTask(job) && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
     throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
   }

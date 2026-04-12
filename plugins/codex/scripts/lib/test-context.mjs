@@ -35,6 +35,10 @@ function isPathWithinRoot(rootPath, targetPath) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function hasNestedGitCheckout(absoluteDir) {
+  return fs.existsSync(path.join(absoluteDir, ".git"));
+}
+
 function walkRepoFiles(rootDir, options = {}) {
   const maxDepth = Number.isInteger(options.maxDepth) ? options.maxDepth : Number.POSITIVE_INFINITY;
   const results = [];
@@ -58,6 +62,9 @@ function walkRepoFiles(rootDir, options = {}) {
       const normalizedName = entry.name.toLowerCase();
       if (entry.isDirectory()) {
         if (WALK_SKIP_DIRS.has(normalizedName) || current.depth >= maxDepth) {
+          continue;
+        }
+        if (current.relativeDir && hasNestedGitCheckout(absolutePath)) {
           continue;
         }
         let directoryKey;
