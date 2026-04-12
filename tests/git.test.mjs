@@ -441,3 +441,46 @@ test("collectTestCommandContext builds Python test paths relative to the selecte
     }
   ]);
 });
+
+test("collectTestCommandContext accepts repo-wide spec directories as test roots", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "spec"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# spec layout\n");
+  fs.writeFileSync(path.join(cwd, "spec", "existing.test.js"), "test('existing', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "src", "foo.js"), "export const value = 1;\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "foo.js"), "export const value = 2;\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "src/foo.js",
+      targets: [{ path: "spec/foo.test.js", action: "create" }]
+    }
+  ]);
+});
+
+test("collectTestCommandContext accepts repo-root test files as a valid layout", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# root tests\n");
+  fs.writeFileSync(path.join(cwd, "foo.test.js"), "test('foo', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "src", "bar.js"), "export const value = 1;\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "bar.js"), "export const value = 2;\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "src/bar.js",
+      targets: [{ path: "bar.test.js", action: "create" }]
+    }
+  ]);
+});

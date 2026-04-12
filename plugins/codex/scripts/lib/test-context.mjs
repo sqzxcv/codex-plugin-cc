@@ -235,9 +235,18 @@ function longestSharedPrefixLength(left, right) {
 }
 
 function getPrimaryLocationScopeParts(location) {
-  const parts = location.replace(/\\/g, "/").split("/");
+  const normalized = location.replace(/\\/g, "/");
+  if (normalized === ".") {
+    return [];
+  }
+  const parts = normalized.split("/").filter((part) => part !== ".");
   const testDirIndex = parts.findIndex((part) => TEST_DIR_NAMES.has(part.toLowerCase()));
-  return testDirIndex >= 0 ? parts.slice(0, testDirIndex) : parts;
+  if (testDirIndex >= 0) {
+    return parts.slice(0, testDirIndex);
+  }
+  // For nonstandard test roots like "spec/" (or "packages/a/spec"), the
+  // location itself is the test root, so scope matching should use its parent.
+  return parts.slice(0, -1);
 }
 
 function rankPrimaryLocationsForSource(relativePath, primaryLocations) {
