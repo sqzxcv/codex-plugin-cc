@@ -264,21 +264,21 @@ function getHeadCommit(cwd) {
   }
 }
 
-function countDiffLines(context) {
-  const content = context.content ?? "";
-  const lines = content.split("\n");
-  let count = 0;
-  for (const line of lines) {
-    if (line.startsWith("+") && !line.startsWith("+++")) count++;
-    if (line.startsWith("-") && !line.startsWith("---")) count++;
+function estimateDiffLines(context) {
+  // Use diffBytes from collectReviewContext as the primary signal.
+  // diffBytes is always measured from actual git diff, regardless of
+  // whether the prompt includes inline diff or self-collect summary.
+  if (context.diffBytes > 0) {
+    // Rough heuristic: ~60 bytes per diff line on average
+    return Math.max(1, Math.round(context.diffBytes / 60));
   }
-  // Fallback: if no diff markers found, estimate from total content lines
-  return count > 0 ? count : Math.floor(lines.length / 3);
+  // Fallback: estimate from file count
+  return (context.fileCount ?? 1) * 30;
 }
 
 function buildChallengeReviewPrompt(context) {
   const domain = detectReviewDomain(context.changedFiles ?? []);
-  const diffLines = countDiffLines(context);
+  const diffLines = estimateDiffLines(context);
   const depth = getDiffDepth(diffLines);
   const focusAreas = getChallengeFocusAreas(domain, depth);
   const depthInstructions = getDepthInstructions(depth, diffLines);
@@ -754,6 +754,9 @@ async function handleReviewCommand(argv, config) {
 
   config.validateRequest?.(target, focusText);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
+  // Capture HEAD before the review starts so the verdict reflects what was
+  // actually reviewed, not whatever HEAD points to after a long-running run.
+  const reviewedCommit = getHeadCommit(cwd);
   const job = createCompanionJob({
     prefix: "review",
     kind: metadata.kind,
@@ -785,7 +788,7 @@ async function handleReviewCommand(argv, config) {
       writeVerdictFile(workspaceRoot, {
         verdict,
         mode: metadata.kind,
-        commit: getHeadCommit(cwd)
+        commit: reviewedCommit
       });
     } catch {
       // Best-effort -- don't fail the command if verdict write fails
