@@ -863,6 +863,17 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   }
 }
 
+const INTERRUPT_TIMEOUT_MS = 10000;
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms).unref?.()
+    )
+  ]);
+}
+
 export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   if (!threadId || !turnId) {
     return {
@@ -885,8 +896,16 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
 
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-    await client.request("turn/interrupt", { threadId, turnId });
+    client = await withTimeout(
+      CodexAppServerClient.connect(cwd, { reuseExistingBroker: true }),
+      INTERRUPT_TIMEOUT_MS,
+      "App-server connect for interrupt"
+    );
+    await withTimeout(
+      client.request("turn/interrupt", { threadId, turnId }),
+      INTERRUPT_TIMEOUT_MS,
+      "turn/interrupt RPC"
+    );
     return {
       attempted: true,
       interrupted: true,

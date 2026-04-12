@@ -98,16 +98,30 @@ async function runSpecialistPass(repoRoot, basePrompt, specialist, options = {})
   }
 }
 
+const VALID_VERDICTS = new Set(["approve", "needs-attention"]);
+
 /**
- * Validate that a parsed specialist result has the minimum required shape.
+ * Validate that a parsed specialist result has the required schema shape.
  * @param {object} parsed
  * @returns {boolean}
  */
 function isValidSpecialistResult(parsed) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-  if (typeof parsed.verdict !== "string" || !parsed.verdict.trim()) return false;
+  if (typeof parsed.verdict !== "string" || !VALID_VERDICTS.has(parsed.verdict)) return false;
   if (!Array.isArray(parsed.findings)) return false;
+  if (!Array.isArray(parsed.next_steps)) return false;
+  if (parsed.next_steps.some((s) => typeof s !== "string")) return false;
   return true;
+}
+
+/**
+ * Central predicate: a pass is successful only if the turn completed (status 0),
+ * no error was thrown, and the parsed output is schema-valid.
+ * @param {object} pass
+ * @returns {boolean}
+ */
+function isPassSuccessful(pass) {
+  return pass.status === 0 && !pass.error && pass.parsed != null && isValidSpecialistResult(pass.parsed);
 }
 
 /**
@@ -149,9 +163,8 @@ export async function runFanOut(repoRoot, basePrompt, options = {}) {
     )
   );
 
-  // Validate each pass: must have a well-formed result, not just parseable JSON
-  const succeeded = passes.filter((p) => p.parsed && !p.error && isValidSpecialistResult(p.parsed));
-  const failed = passes.filter((p) => !p.parsed || p.error || !isValidSpecialistResult(p.parsed));
+  const succeeded = passes.filter(isPassSuccessful);
+  const failed = passes.filter((p) => !isPassSuccessful(p));
 
   // If 3+ passes fail, report overall failure
   if (failed.length >= 3) {
@@ -246,8 +259,8 @@ function renderSpecialistSection(pass) {
 }
 
 function renderFanOutResult(verdict, passes, allFindings, nextSteps) {
-  const succeeded = passes.filter((p) => p.parsed && !p.error);
-  const failed = passes.filter((p) => !p.parsed || p.error);
+  const succeeded = passes.filter(isPassSuccessful);
+  const failed = passes.filter((p) => !isPassSuccessful(p));
 
   const lines = [
     "# Codex Specialist Review",
@@ -281,7 +294,7 @@ function renderFanOutResult(verdict, passes, allFindings, nextSteps) {
 }
 
 function renderFanOutFailure(passes) {
-  const failed = passes.filter((p) => !p.parsed || p.error);
+  const failed = passes.filter((p) => !isPassSuccessful(p));
   const lines = [
     "# Codex Specialist Review",
     "",
