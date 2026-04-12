@@ -189,3 +189,36 @@ export function resolveJobFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.json`);
 }
+
+const VERDICT_FILE_NAME = "last-verdict.json";
+
+export function resolveVerdictFile(cwd) {
+  return path.join(resolveStateDir(cwd), VERDICT_FILE_NAME);
+}
+
+export function writeVerdictFile(cwd, { verdict, mode, commit }) {
+  ensureStateDir(cwd);
+  const payload = {
+    verdict: verdict ?? null,
+    mode: mode ?? null,
+    timestamp: new Date().toISOString(),
+    commit: commit ?? null
+  };
+  const filePath = resolveVerdictFile(cwd);
+  const tmpPath = `${filePath}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(payload)}\n`, "utf8");
+  fs.renameSync(tmpPath, filePath);
+  return filePath;
+}
+
+export function readVerdictFile(cwd) {
+  const filePath = resolveVerdictFile(cwd);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}

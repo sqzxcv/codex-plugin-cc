@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -21,7 +21,7 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, getRepoRoot, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import {
   loadPromptTemplate,
@@ -38,7 +38,8 @@ import {
   listJobs,
   setConfig,
   upsertJob,
-  writeJobFile
+  writeJobFile,
+  writeVerdictFile
 } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
@@ -253,6 +254,14 @@ function buildAdversarialReviewPrompt(context, focusText) {
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
     REVIEW_INPUT: context.content
   });
+}
+
+function getHeadCommit(cwd) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
 }
 
 function countDiffLines(context) {
@@ -753,7 +762,7 @@ async function handleReviewCommand(argv, config) {
     jobClass: "review",
     summary: metadata.summary
   });
-  await runForegroundCommand(
+  const execution = await runForegroundCommand(
     job,
     (progress) =>
       executeReviewRun({
@@ -768,6 +777,20 @@ async function handleReviewCommand(argv, config) {
       }),
     { json: options.json }
   );
+
+  // Write verdict file for downstream consumers (e.g. pre-push-review)
+  const verdict = execution?.payload?.result?.verdict ?? null;
+  if (verdict) {
+    try {
+      writeVerdictFile(workspaceRoot, {
+        verdict,
+        mode: metadata.kind,
+        commit: getHeadCommit(cwd)
+      });
+    } catch {
+      // Best-effort -- don't fail the command if verdict write fails
+    }
+  }
 }
 
 async function handleReview(argv) {
