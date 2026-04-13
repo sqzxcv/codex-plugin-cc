@@ -313,7 +313,31 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
   const activeTask = jobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
-    throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
+    // Check if the process is actually alive before blocking
+    const pid = activeTask.pid;
+    let processAlive = false;
+    if (pid) {
+      try {
+        process.kill(pid, 0);
+        processAlive = true;
+      } catch (e) {
+        processAlive = e.code === "EPERM"; // exists but no permission to signal
+      }
+    }
+
+    if (processAlive) {
+      throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
+    }
+
+    // Process is dead — clean up the zombie job and continue
+    upsertJob(workspaceRoot, {
+      id: activeTask.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage: "Process exited without updating job status.",
+      completedAt: new Date().toISOString()
+    });
   }
 
   const trackedTask = jobs.find((job) => job.jobClass === "task" && job.status === "completed" && job.threadId);
