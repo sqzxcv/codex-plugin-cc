@@ -1,8 +1,7 @@
 ---
-description: Run a Codex code review against local git state
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
-disable-model-invocation: true
-allowed-tools: Bash(node:*), Bash(git:*)
+description: Run a standard Codex code review against local git state
+argument-hint: '[--wait] [--base <ref>] [--scope auto|working-tree|branch]'
+allowed-tools: Agent, Bash(node:*)
 ---
 
 Run a Codex review through the shared built-in reviewer.
@@ -10,10 +9,7 @@ Run a Codex review through the shared built-in reviewer.
 Raw slash-command arguments:
 `$ARGUMENTS`
 
-Core constraint:
-- This command is review-only.
-- Do not fix issues, apply patches, or suggest that you are about to make changes.
-- Your only job is to run the review and return Codex's output verbatim to the user.
+Companion script path: `${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs`
 
 ## Execution
 
@@ -23,14 +19,15 @@ Core constraint:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review "$ARGUMENTS"
 ```
 
-Return stdout verbatim. Do not paraphrase, summarize, or add commentary.
+Return stdout verbatim. No commentary.
 
-**Otherwise (default)**: launch in the background immediately. This must be your FIRST and ONLY tool call. Do not run any git commands, size estimation, or other preliminary steps.
+**Otherwise (default)**: launch a background Agent immediately. This must be your FIRST and ONLY action. Do not run any git commands, read files, or do any preliminary work.
 
 ```typescript
-Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" review "$ARGUMENTS"`,
-  description: "Codex review",
+Agent({
+  name: "codex-review",
+  description: "Codex code review",
+  prompt: "Execute this bash command and return its complete stdout verbatim. Do not add any text before or after. Do not summarize or comment on the output. Do not run additional commands.\n\nCommand:\nnode \"${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs\" review \"$ARGUMENTS\"",
   run_in_background: true
 })
 ```
@@ -39,6 +36,6 @@ After launching, respond with only: "Codex review running in background."
 
 ## Rules
 
-- Preserve the user's arguments exactly. Do not strip or rewrite flags.
-- Do not read files, run git commands, or do any work before launching. The companion script handles all detection.
-- Do not fix any issues mentioned in the review output.
+- Review-only. Do not fix issues or suggest changes.
+- Preserve the user's arguments exactly.
+- The companion script handles all scope detection, file reading, and diff analysis.

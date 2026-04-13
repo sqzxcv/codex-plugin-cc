@@ -1,7 +1,7 @@
 ---
-description: Auto-detect what to review and run the appropriate Codex command
-argument-hint: '[--wait|--background] [--base <ref>]'
-allowed-tools: Bash(node:*), Bash(git:*)
+description: Auto-detect what to review and run the appropriate Codex review command
+argument-hint: '[--wait] [--base <ref>]'
+allowed-tools: Agent, Glob, Bash(node:*), Bash(git:*)
 ---
 
 Smart router that detects what to review and dispatches to the right Codex command.
@@ -9,29 +9,48 @@ Smart router that detects what to review and dispatches to the right Codex comma
 Raw slash-command arguments:
 `$ARGUMENTS`
 
-Core constraint:
-- This command is review-only.
-- Do not fix issues, apply patches, or suggest that you are about to make changes.
-- Your only job is to detect the right review mode, run it, and return output verbatim.
+Companion script path: `${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs`
 
 ## Execution
 
 **If `--wait` is in the arguments**: run detection and companion in the foreground.
 
-Run git commands to detect scope, then call the matching companion command:
-- Working tree has changes → `challenge --scope working-tree`
-- Branch ahead of base → `challenge --scope branch`
-- HANDOFF.md or plan file exists → `adversarial-review "Review the feasibility and completeness of this plan"`
+1. Run `git status --short --untracked-files=all` to check working tree
+2. Run `BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main") && git rev-list --count "${BASE}..HEAD"` to check branch
+3. Use Glob to check for `HANDOFF.md` or `working-docs/*/plan*.md`
+
+Route to the first match:
+- Working tree has changes → `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" challenge --scope working-tree $EXTRA_FLAGS`
+- Branch ahead of base → `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" challenge --scope branch $EXTRA_FLAGS`
+- Plan files exist → `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review $EXTRA_FLAGS "Review the feasibility and completeness of this plan"`
 - Nothing to review → tell user, show available commands
 
-Return stdout verbatim.
+Return stdout verbatim. No commentary.
 
-**Otherwise (default)**: launch the entire detection + review as a single background Bash call. This must be your FIRST and ONLY tool call. Do not run any preliminary git commands yourself.
+**Otherwise (default)**: launch a background Agent immediately. This must be your FIRST and ONLY action. Do not run any git commands or preliminary detection yourself.
 
 ```typescript
-Bash({
-  command: `PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; EXTRA_FLAGS="$ARGUMENTS"; STATUS=$(git status --short --untracked-files=all 2>/dev/null); BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main"); AHEAD=$(git rev-list --count "${BASE}..HEAD" 2>/dev/null || echo "0"); PLAN=$(ls HANDOFF.md working-docs/*/plan*.md 2>/dev/null); if [ -n "$STATUS" ]; then node "$PLUGIN_ROOT/scripts/codex-companion.mjs" challenge --scope working-tree $EXTRA_FLAGS; elif [ "$AHEAD" -gt 0 ]; then node "$PLUGIN_ROOT/scripts/codex-companion.mjs" challenge --scope branch $EXTRA_FLAGS; elif [ -n "$PLAN" ]; then node "$PLUGIN_ROOT/scripts/codex-companion.mjs" adversarial-review $EXTRA_FLAGS "Review the feasibility and completeness of this plan"; else echo "No changes detected."; fi`,
+Agent({
+  name: "codex-run",
   description: "Codex auto-detect review",
+  prompt: `Detect what to review and run the appropriate Codex review command. Return all output verbatim with no commentary.
+
+Companion script: ${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs
+User flags: $ARGUMENTS
+
+Steps:
+1. Run: git status --short --untracked-files=all
+2. Run: BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main") && git rev-list --count "$\{BASE}..HEAD"
+3. Run: ls HANDOFF.md working-docs/*/plan*.md 2>/dev/null
+
+Route to the first match:
+- Working tree has changes: node "<companion>" challenge --scope working-tree <user_flags>
+- Branch ahead: node "<companion>" challenge --scope branch <user_flags>
+- Plan files exist: node "<companion>" adversarial-review <user_flags> "Review the feasibility and completeness of this plan"
+- Nothing: output "No changes detected."
+
+Strip --wait and --background from user flags before passing to the companion.
+Return the companion stdout verbatim. No commentary before or after.`,
   run_in_background: true
 })
 ```
@@ -40,5 +59,5 @@ After launching, respond with only: "Codex review running in background."
 
 ## Rules
 
-- Extract `--wait` and `--base <ref>` from `$ARGUMENTS` for `$EXTRA_FLAGS`. Do not pass them twice.
-- Do not fix any issues mentioned in the review output.
+- Review-only. Do not fix issues or suggest changes.
+- Extract `--wait` and `--base <ref>` from arguments. Do not pass `--wait` or `--background` to the companion.
