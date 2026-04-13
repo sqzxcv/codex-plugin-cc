@@ -163,15 +163,15 @@ function isTestFile(relativePath) {
   const normalized = relativePath.replace(/\\/g, "/");
   const baseName = path.basename(normalized).toLowerCase();
   const parts = normalized.split("/");
-  if (parts.some((part) => TEST_DIR_NAMES.has(part.toLowerCase()))) {
-    return true;
-  }
-  return (
+  const matchesTestName =
     baseName.includes(".test.") ||
     baseName.includes(".spec.") ||
     baseName.startsWith("test_") ||
-    baseName.endsWith("_test.go")
-  );
+    baseName.endsWith("_test.go");
+  if (matchesTestName) {
+    return true;
+  }
+  return parts.some((part) => TEST_DIR_NAMES.has(part.toLowerCase())) && matchesTestName;
 }
 
 function uniqueSorted(values) {

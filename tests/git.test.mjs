@@ -527,3 +527,26 @@ test("collectTestCommandContext prefers explicit test directories over repo-root
     }
   ]);
 });
+
+test("collectTestCommandContext ignores support files inside test directories when matching test targets", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# support files in tests\n");
+  fs.writeFileSync(path.join(cwd, "tests", "config.js"), "export const shared = true;\n");
+  fs.writeFileSync(path.join(cwd, "tests", "existing.test.js"), "test('existing', () => {});\n");
+  fs.writeFileSync(path.join(cwd, "src", "config.js"), "export const value = 1;\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "config.js"), "export const value = 2;\n");
+
+  const context = collectTestCommandContext(cwd);
+
+  assert.deepEqual(context.testPlanEntries, [
+    {
+      sourcePath: "src/config.js",
+      targets: [{ path: "tests/config.test.js", action: "create" }]
+    }
+  ]);
+});
