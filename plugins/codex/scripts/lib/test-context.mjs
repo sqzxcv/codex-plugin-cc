@@ -64,7 +64,7 @@ function walkRepoFiles(rootDir, options = {}) {
         if (WALK_SKIP_DIRS.has(normalizedName) || current.depth >= maxDepth) {
           continue;
         }
-        if (current.relativeDir && hasNestedGitCheckout(absolutePath)) {
+        if (hasNestedGitCheckout(absolutePath)) {
           continue;
         }
         let directoryKey;
@@ -355,12 +355,16 @@ function buildTestFileCandidates(relativePath, testFiles, primaryLocations) {
     return false;
   });
   if (directMatches.length > 0) {
-    const scopedMatches =
-      preferredRoots.size === 0
-        ? directMatches
-        : directMatches.filter((candidate) => [...preferredRoots].some((root) => candidate === root || candidate.startsWith(`${root}/`)));
-    const effectiveMatches = scopedMatches.length > 0 ? scopedMatches : directMatches;
-    return uniqueSorted(effectiveMatches).map((candidate) => ({ path: candidate, action: "update" }));
+    if (preferredRoots.size === 0) {
+      return [];
+    }
+    const scopedMatches = directMatches.filter((candidate) =>
+      [...preferredRoots].some((root) => candidate === root || candidate.startsWith(`${root}/`))
+    );
+    if (scopedMatches.length === 0) {
+      return [];
+    }
+    return uniqueSorted(scopedMatches).map((candidate) => ({ path: candidate, action: "update" }));
   }
 
   if (extension === ".go") {

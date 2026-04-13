@@ -220,6 +220,26 @@ test("collectTestCommandContext ignores nested worktree directories inside the w
   assert.throws(() => collectTestCommandContext(cwd), /No test layout detected/i);
 });
 
+test("collectTestCommandContext ignores root-level nested checkouts inside the workspace", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# repo\n");
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 1;\n");
+
+  const nestedRepoDir = path.join(cwd, "nestedrepo");
+  fs.mkdirSync(nestedRepoDir, { recursive: true });
+  initGitRepo(nestedRepoDir);
+  fs.mkdirSync(path.join(nestedRepoDir, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(nestedRepoDir, "tests", "app.test.js"), "test('nested', () => {});\n");
+
+  run("git", ["add", "README.md", "src/app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "src", "app.js"), "export const value = 2;\n");
+
+  assert.throws(() => collectTestCommandContext(cwd), /No test layout detected/i);
+});
+
 test("collectTestCommandContext ignores symlinked guidance files outside the repo", () => {
   const cwd = makeTempDir();
   const externalDir = makeTempDir();
@@ -387,6 +407,21 @@ test("collectTestCommandContext fails closed when no package-local test root mat
   fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 1;\n");
   fs.writeFileSync(path.join(cwd, "packages", "a", "tests", "a.test.js"), "test('a', () => {});\n");
   fs.writeFileSync(path.join(cwd, "packages", "b", "tests", "b.test.js"), "test('b', () => {});\n");
+  run("git", ["add", "."], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 2;\n");
+
+  assert.throws(() => collectTestCommandContext(cwd), /Unable to infer test targets from changed files/i);
+});
+
+test("collectTestCommandContext fails closed when direct test matches only exist outside the source scope", () => {
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.mkdirSync(path.join(cwd, "tools"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "packages", "a", "tests"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "README.md"), "# monorepo\n");
+  fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 1;\n");
+  fs.writeFileSync(path.join(cwd, "packages", "a", "tests", "gen.test.js"), "test('a', () => {});\n");
   run("git", ["add", "."], { cwd });
   run("git", ["commit", "-m", "init"], { cwd });
   fs.writeFileSync(path.join(cwd, "tools", "gen.js"), "export const generate = () => 2;\n");
