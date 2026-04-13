@@ -1,56 +1,53 @@
 ---
 description: Delegate investigation, coding tasks, bug fixes, or follow-up work to Codex
-argument-hint: "[--wait] [--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [what Codex should investigate, solve, or continue]"
+argument-hint: "[--wait] [--resume] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [task description]"
 allowed-tools: Agent, Bash(node:*), AskUserQuestion
 ---
 
 Run a Codex rescue task. Defaults to background.
 
 Raw user request:
-$ARGUMENTS
+`$ARGUMENTS`
 
 Companion script path: `${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs`
 
-## Step 1: Resume check (foreground, fast)
+## Execution
 
-If `--resume` or `--fresh` is in the request, skip this step.
+If the raw user request contains no task description (only flags or empty), use `AskUserQuestion` to ask what Codex should investigate or fix. Then proceed.
 
-Otherwise, check for a resumable thread:
+**If `--wait` is in the request**: run in the foreground.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --write "$ARGUMENTS"
 ```
 
-- If `available: true`: use `AskUserQuestion` once with choices `Continue current Codex thread` / `Start a new Codex thread`. Add `--resume` or `--fresh` based on the choice.
-- If `available: false`: continue without asking.
+Return stdout verbatim. No commentary.
 
-If the user did not supply a task description, use `AskUserQuestion` to ask what Codex should investigate or fix.
-
-## Step 2: Build the command
-
-Construct the companion command:
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task [flags] "the task description"`
-
-Flag rules:
-- Strip `--wait` (execution flag, not forwarded)
-- Preserve `--resume` → becomes `--resume-last`
-- Preserve `--fresh` (no `--resume-last`)
-- Preserve `--model` and `--effort` as-is
-- Map `--model spark` to `--model gpt-5.3-codex-spark`
-- Add `--write` by default unless user asks for read-only/review-only behavior
-- Leave `--effort` and `--model` unset unless user explicitly asks
-
-## Step 3: Execute
-
-**If `--wait` is in the request**: run the constructed command in the foreground via Bash. Return stdout verbatim.
-
-**Otherwise (default)**: launch a background Agent with the constructed command.
+**Otherwise (default)**: launch a background Agent immediately. This must be your FIRST and ONLY action after confirming a task description exists. Do not parse flags, check resume state, or do any other foreground work.
 
 ```typescript
 Agent({
   name: "codex-rescue",
   description: "Codex rescue task",
-  prompt: "Execute this bash command and return its complete stdout verbatim. Do not add any text before or after. Do not summarize or comment on the output. Do not run additional commands.\n\nCommand:\n<the constructed command from Step 2>",
+  prompt: `Execute a Codex rescue task via the companion script. Return its complete stdout verbatim with no commentary.
+
+Companion: ${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs
+Raw user request: $ARGUMENTS
+
+Build and run the command:
+  node "<companion>" task [flags] "<task description>"
+
+Flag rules:
+- Add --write unless the task is clearly read-only (explain, describe, review, diagnose)
+- --resume in the request → add --resume-last to the command
+- --fresh in the request → do NOT add --resume-last
+- If neither --resume nor --fresh: default to fresh (no --resume-last)
+- --model spark → --model gpt-5.3-codex-spark. Other --model values pass through
+- --effort passes through as-is
+- Strip --wait (not a companion flag)
+- Everything that is not a flag is the task description
+
+Run the constructed command and return stdout verbatim. No commentary.`,
   run_in_background: true
 })
 ```
@@ -59,6 +56,5 @@ After launching, respond with only: "Codex rescue task running in background."
 
 ## Rules
 
-- Return Codex companion stdout verbatim. No commentary.
 - Do not inspect files, monitor progress, or do follow-up work after launching.
-- If the helper reports Codex is missing or unauthenticated, tell user to run `/codex:setup`.
+- If the companion reports Codex is missing or unauthenticated, tell user to run `/codex:setup`.
