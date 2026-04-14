@@ -771,6 +771,8 @@ async function handleTask(argv) {
     resumeLast
   });
 
+  const sandbox = resolveSandbox(options.sandbox, write ? "workspace-write" : "read-only");
+
   if (options.background) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
@@ -782,7 +784,7 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
-      sandbox: options.sandbox,
+      sandbox,
       resumeLast,
       jobId: job.id
     });
@@ -801,7 +803,7 @@ async function handleTask(argv) {
         effort,
         prompt,
         write,
-        sandbox: options.sandbox,
+        sandbox,
         resumeLast,
         jobId: job.id,
         onProgress: progress
