@@ -77,7 +77,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--resume-id <threadId>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -734,8 +734,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume"],
-    booleanOptions: ["json", "write", "resume-last", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-id"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
     }
@@ -747,11 +747,11 @@ async function handleTask(argv) {
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
-  const resumeId = typeof options.resume === "string" ? options.resume : null;
-  const resumeLast = Boolean(options["resume-last"]);
+  const resumeId = typeof options["resume-id"] === "string" ? options["resume-id"] : null;
+  const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
   if ((resumeLast || resumeId) && fresh) {
-    throw new Error("Choose either --resume/--resume-last or --fresh.");
+    throw new Error("Choose either --resume/--resume-last/--resume-id or --fresh.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
