@@ -461,11 +461,13 @@ async function executeTaskRun(request) {
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
-    resumeLast: request.resumeLast
+    resumeLast: request.resumeLast || Boolean(request.resumeId)
   });
 
   let resumeThreadId = null;
-  if (request.resumeLast) {
+  if (request.resumeId) {
+    resumeThreadId = request.resumeId;
+  } else if (request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -598,7 +600,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, resumeId, jobId }) {
   return {
     cwd,
     model,
@@ -606,6 +608,7 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
+    resumeId,
     jobId
   };
 }
@@ -731,8 +734,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume"],
+    booleanOptions: ["json", "write", "resume-last", "fresh", "background"],
     aliasMap: {
       m: "model"
     }
@@ -744,20 +747,21 @@ async function handleTask(argv) {
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
-  const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const resumeId = typeof options.resume === "string" ? options.resume : null;
+  const resumeLast = Boolean(options["resume-last"]);
   const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
+  if ((resumeLast || resumeId) && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
     prompt,
-    resumeLast
+    resumeLast: resumeLast || Boolean(resumeId)
   });
 
   if (options.background) {
     ensureCodexAvailable(cwd);
-    requireTaskRequest(prompt, resumeLast);
+    requireTaskRequest(prompt, resumeLast || Boolean(resumeId));
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
@@ -767,6 +771,7 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
+      resumeId,
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -785,6 +790,7 @@ async function handleTask(argv) {
         prompt,
         write,
         resumeLast,
+        resumeId,
         jobId: job.id,
         onProgress: progress
       }),
