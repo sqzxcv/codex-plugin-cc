@@ -90,7 +90,16 @@ test("rescue command absorbs continue semantics", () => {
   const runtimeSkill = read("skills/codex-cli-runtime/SKILL.md");
 
   assert.match(rescue, /The final user-visible response must be Codex's output verbatim/i);
-  assert.match(rescue, /allowed-tools:\s*Bash\(node:\*\),\s*AskUserQuestion/);
+  assert.match(rescue, /allowed-tools:\s*Bash\(node:\*\),\s*AskUserQuestion,\s*Agent/);
+  // Regression for #234: `Skill(codex:rescue)` from the main agent recursed
+  // because rescue.md named the routing with ambiguous prose ("Route this
+  // request to the `codex:codex-rescue` subagent") while running under
+  // `context: fork` — forked general-purpose subagents do not expose the
+  // `Agent` tool, so the fork fell back to `Skill` and re-entered this
+  // command. Pin the explicit transport and the inline (no-fork) execution.
+  assert.match(rescue, /subagent_type: "codex:codex-rescue"/);
+  assert.match(rescue, /do not call `Skill\(codex:codex-rescue\)`/i);
+  assert.doesNotMatch(rescue, /^context:\s*fork\b/m);
   assert.match(rescue, /--background\|--wait/);
   assert.match(rescue, /--resume\|--fresh/);
   assert.match(rescue, /--model <model\|spark>/);
