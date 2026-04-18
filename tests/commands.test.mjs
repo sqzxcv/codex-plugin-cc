@@ -126,6 +126,10 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /Leave model unset by default/i);
   assert.match(agent, /If the user asks for `spark`, map that to `--model gpt-5\.3-codex-spark`/i);
   assert.match(agent, /If the user asks for a concrete model name such as `gpt-5\.4-mini`, pass it through with `--model`/i);
+  assert.match(agent, /Default to a write-capable Codex run by adding `--write`/i);
+  assert.match(agent, /If the user says Codex sandboxing, bwrap, bubblewrap, or Linux sandbox setup is failing/i);
+  assert.match(agent, /CODEX_COMPANION_SANDBOX_MODE=inherit/i);
+  assert.match(agent, /If `CODEX_COMPANION_SANDBOX_MODE` is already present in the environment, preserve it/i);
   assert.match(agent, /Return the stdout of the `codex-companion` command exactly as-is/i);
   assert.match(agent, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
   assert.match(agent, /gpt-5-4-prompting/);
@@ -138,9 +142,14 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Leave `--effort` unset unless the user explicitly requests a specific effort/i);
   assert.match(runtimeSkill, /Leave model unset by default/i);
   assert.match(runtimeSkill, /Map `spark` to `--model gpt-5\.3-codex-spark`/i);
+  assert.match(runtimeSkill, /Default to a write-capable Codex run by adding `--write`/i);
+  assert.match(runtimeSkill, /If the user reports `bwrap`, `bubblewrap`, Codex sandbox, or Linux sandbox setup failures/i);
+  assert.match(runtimeSkill, /CODEX_COMPANION_SANDBOX_MODE=inherit node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" task --write "<raw arguments>"/i);
+  assert.match(runtimeSkill, /If `CODEX_COMPANION_SANDBOX_MODE` is already set in the environment, let it pass through unchanged/i);
   assert.match(runtimeSkill, /If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only/i);
   assert.match(runtimeSkill, /Strip it before calling `task`/i);
   assert.match(runtimeSkill, /`--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`/i);
+  assert.match(runtimeSkill, /Sandbox override: `CODEX_COMPANION_SANDBOX_MODE=inherit` omits the app-server sandbox field/i);
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
   assert.match(readme, /`codex:codex-rescue` subagent/i);
@@ -165,9 +174,9 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
   const resultHandling = read("skills/codex-result-handling/SKILL.md");
 
   assert.match(result, /disable-model-invocation:\s*true/);
-  assert.match(result, /codex-companion\.mjs" result \$ARGUMENTS/);
+  assert.match(result, /codex-companion\.mjs" result "\$ARGUMENTS"/);
   assert.match(cancel, /disable-model-invocation:\s*true/);
-  assert.match(cancel, /codex-companion\.mjs" cancel \$ARGUMENTS/);
+  assert.match(cancel, /codex-companion\.mjs" cancel "\$ARGUMENTS"/);
   assert.match(resultHandling, /do not turn a failed or incomplete Codex run into a Claude-side implementation attempt/i);
   assert.match(resultHandling, /if Codex was never successfully invoked, do not generate a substitute answer at all/i);
 });
