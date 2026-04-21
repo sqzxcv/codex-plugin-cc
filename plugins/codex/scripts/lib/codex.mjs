@@ -52,6 +52,22 @@ function cleanCodexStderr(stderr) {
     .join("\n");
 }
 
+function buildProfileConfig(profile) {
+  const normalized = typeof profile === "string" ? profile.trim() : "";
+  if (!normalized) {
+    return null;
+  }
+  return { profile: normalized };
+}
+
+function buildAppServerArgs(options = {}) {
+  const profile = typeof options.profile === "string" ? options.profile.trim() : "";
+  if (!profile) {
+    return [];
+  }
+  return ["-c", `profile=${JSON.stringify(profile)}`];
+}
+
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
   return {
@@ -59,6 +75,7 @@ function buildThreadParams(cwd, options = {}) {
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
+    config: options.config ?? null,
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true,
     experimentalRawEvents: false
@@ -72,7 +89,8 @@ function buildResumeParams(threadId, cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only"
+    sandbox: options.sandbox ?? "read-only",
+    config: options.config ?? null
   };
 }
 
@@ -846,6 +864,8 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, {
+      appServerArgs: buildAppServerArgs(options),
+      disableBroker: Boolean(options.profile),
       env: options.env,
       reuseExistingBroker: true
     });
@@ -914,6 +934,7 @@ export async function runAppServerReview(cwd, options = {}) {
   return withAppServer(cwd, async (client) => {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
     const thread = await startThread(client, cwd, {
+      config: buildProfileConfig(options.profile),
       model: options.model,
       sandbox: "read-only",
       ephemeral: true,
@@ -973,6 +994,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
+        config: buildProfileConfig(options.profile),
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: false
@@ -981,6 +1003,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
+        config: buildProfileConfig(options.profile),
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
