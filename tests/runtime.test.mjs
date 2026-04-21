@@ -535,6 +535,114 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
   assert.match(resume.stderr, /No previous Codex task thread was found for this repository\./);
 });
 
+const SESSION_START_BASH = path.join(PLUGIN_ROOT, "scripts", "session-start-env.sh");
+
+test("bash session start hook exports the same env vars as the Node.js version", () => {
+  const repo = makeTempDir();
+  const envFile = path.join(makeTempDir(), "claude-env.sh");
+  fs.writeFileSync(envFile, "", "utf8");
+  const pluginDataDir = makeTempDir();
+
+  const result = run("bash", [SESSION_START_BASH], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: envFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: JSON.stringify({
+      session_id: "sess-bash-test",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    fs.readFileSync(envFile, "utf8"),
+    `export CODEX_COMPANION_SESSION_ID='sess-bash-test'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\n`
+  );
+});
+
+test("bash session start hook handles single quotes in session id", () => {
+  const envFile = path.join(makeTempDir(), "claude-env.sh");
+  fs.writeFileSync(envFile, "", "utf8");
+
+  const result = run("bash", [SESSION_START_BASH], {
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: envFile
+    },
+    input: JSON.stringify({
+      session_id: "O'Brien's \"test\""
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const content = fs.readFileSync(envFile, "utf8");
+  assert.match(content, /CODEX_COMPANION_SESSION_ID=/);
+  // Verify the escaped value roundtrips correctly via shell eval
+  const script = path.join(makeTempDir(), "roundtrip.sh");
+  fs.writeFileSync(script, `${content}\nprintf '%s' "$CODEX_COMPANION_SESSION_ID"`, { mode: 0o755 });
+  const roundtrip = run("bash", [script]);
+  assert.equal(roundtrip.stdout, "O'Brien's \"test\"");
+});
+
+test("bash session start hook exits cleanly without CLAUDE_ENV_FILE", () => {
+  const result = run("bash", [SESSION_START_BASH], {
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: ""
+    },
+    input: JSON.stringify({
+      session_id: "sess-no-env-file"
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+});
+
+test("bash session start hook produces identical output to the Node.js version", () => {
+  const repo = makeTempDir();
+  const nodeEnvFile = path.join(makeTempDir(), "node-env.sh");
+  const bashEnvFile = path.join(makeTempDir(), "bash-env.sh");
+  fs.writeFileSync(nodeEnvFile, "", "utf8");
+  fs.writeFileSync(bashEnvFile, "", "utf8");
+  const pluginDataDir = makeTempDir();
+  const inputJson = JSON.stringify({
+    hook_event_name: "SessionStart",
+    session_id: "sess-parity-check",
+    cwd: repo
+  });
+
+  const nodeResult = run("node", [SESSION_HOOK, "SessionStart"], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: nodeEnvFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: inputJson
+  });
+
+  const bashResult = run("bash", [SESSION_START_BASH], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: bashEnvFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: inputJson
+  });
+
+  assert.equal(nodeResult.status, 0, nodeResult.stderr);
+  assert.equal(bashResult.status, 0, bashResult.stderr);
+  assert.equal(
+    fs.readFileSync(bashEnvFile, "utf8"),
+    fs.readFileSync(nodeEnvFile, "utf8")
+  );
+});
+
 test("session start hook exports the Claude session id and plugin data dir for later commands", () => {
   const repo = makeTempDir();
   const envFile = path.join(makeTempDir(), "claude-env.sh");
