@@ -69,15 +69,16 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const COMPANION_PROFILE_ENV = "CODEX_COMPANION_PROFILE";
 
 function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--profile <name>] [--json]",
+      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--profile <name>]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--profile <name>] [focus text]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--profile <name>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -122,6 +123,18 @@ function normalizeReasoningEffort(effort) {
     );
   }
   return normalized;
+}
+
+function normalizeProfile(profile) {
+  if (profile == null) {
+    return null;
+  }
+  const normalized = String(profile).trim();
+  return normalized || null;
+}
+
+function resolveRequestedProfile(options = {}, env = process.env) {
+  return normalizeProfile(options.profile) ?? normalizeProfile(env[COMPANION_PROFILE_ENV]);
 }
 
 function normalizeArgv(argv) {
@@ -176,12 +189,13 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
-async function buildSetupReport(cwd, actionsTaken = []) {
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const codexStatus = getCodexAvailability(cwd);
-  const authStatus = await getCodexAuthStatus(cwd);
+  const profile = resolveRequestedProfile(options);
+  const authStatus = await getCodexAuthStatus(cwd, { profile });
   const config = getConfig(workspaceRoot);
 
   const nextSteps = [];
@@ -203,6 +217,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     codex: codexStatus,
     auth: authStatus,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
+    profile,
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,
     nextSteps
@@ -211,7 +226,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "profile"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
   });
 
@@ -231,7 +246,7 @@ async function handleSetup(argv) {
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken, options);
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -365,6 +380,7 @@ async function executeReviewRun(request) {
   if (reviewName === "Review") {
     const reviewTarget = validateNativeReviewRequest(target, focusText);
     const result = await runAppServerReview(request.cwd, {
+      profile: request.profile,
       target: reviewTarget,
       model: request.model,
       onProgress: request.onProgress
@@ -408,6 +424,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
+    profile: request.profile,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -485,6 +502,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
+    profile: request.profile,
     sandbox: request.write ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
     persistThread: true,
@@ -598,11 +616,12 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, profile, prompt, write, resumeLast, jobId }) {
   return {
     cwd,
     model,
     effort,
+    profile,
     prompt,
     write,
     resumeLast,
@@ -681,7 +700,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "cwd", "profile"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -690,6 +709,7 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  const profile = resolveRequestedProfile(options);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
@@ -714,6 +734,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model: options.model,
+        profile,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -731,7 +752,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "profile"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -742,6 +763,7 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
+  const profile = resolveRequestedProfile(options);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
@@ -764,6 +786,7 @@ async function handleTask(argv) {
       cwd,
       model,
       effort,
+      profile,
       prompt,
       write,
       resumeLast,
@@ -782,6 +805,7 @@ async function handleTask(argv) {
         cwd,
         model,
         effort,
+        profile,
         prompt,
         write,
         resumeLast,

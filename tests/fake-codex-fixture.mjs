@@ -27,6 +27,29 @@ function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+function extractProfileOverride(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "-c" || token === "--config") {
+      const value = args[index + 1] || "";
+      const match = /^profile=(.+)$/.exec(value);
+      if (match) {
+        return match[1].replace(/^"(.*)"$/, "$1");
+      }
+      index += 1;
+      continue;
+    }
+    const inlineMatch = /^--config=(.+)$/.exec(token);
+    if (inlineMatch) {
+      const match = /^profile=(.+)$/.exec(inlineMatch[1]);
+      if (match) {
+        return match[1].replace(/^"(.*)"$/, "$1");
+      }
+    }
+  }
+  return null;
+}
+
 function requiresExperimental(field, message, state) {
   if (!(field in (message.params || {}))) {
     return false;
@@ -232,6 +255,13 @@ function taskPayload(prompt, resume) {
 }
 
 const args = process.argv.slice(2);
+const bootState = loadState();
+bootState.invocations = bootState.invocations || [];
+bootState.invocations.push(args);
+if (args[0] === "app-server") {
+  bootState.lastAppServerProfile = extractProfileOverride(args.slice(1));
+}
+saveState(bootState);
 if (args[0] === "--version") {
   console.log("codex-cli test");
   process.exit(0);
@@ -254,9 +284,9 @@ if (args[0] === "login") {
 if (args[0] !== "app-server") {
   process.exit(1);
 }
-const bootState = loadState();
-bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
-saveState(bootState);
+const appServerState = loadState();
+appServerState.appServerStarts = (appServerState.appServerStarts || 0) + 1;
+saveState(appServerState);
 
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -296,6 +326,12 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadStart = {
+          cwd: message.params.cwd ?? null,
+          model: message.params.model ?? null,
+          config: message.params.config ?? null
+        };
+        saveState(state);
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });
@@ -328,6 +364,13 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadResume = {
+          threadId: message.params.threadId,
+          cwd: message.params.cwd ?? null,
+          model: message.params.model ?? null,
+          config: message.params.config ?? null
+        };
+        saveState(state);
         const thread = ensureThread(state, message.params.threadId);
         thread.updatedAt = now();
         saveState(state);
