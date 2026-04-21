@@ -3,7 +3,7 @@
 # Replaces the Node.js session-lifecycle-hook.mjs for the SessionStart path
 # to avoid ~100ms V8 startup overhead on every session.
 
-set -uo pipefail
+set -euo pipefail
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
