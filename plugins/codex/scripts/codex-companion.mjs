@@ -485,7 +485,15 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    // Sandbox selection:
+    //   - CODEX_COMPANION_FULL_ACCESS=1 → danger-full-access (explicit opt-in
+    //     required for MCP tool calls that spawn helper subprocesses outside
+    //     the workspace; see PR description).
+    //   - --write      → workspace-write (write-capable rescue, original behavior)
+    //   - otherwise    → read-only       (safe default for diagnosis)
+    sandbox: process.env.CODEX_COMPANION_FULL_ACCESS === "1"
+      ? "danger-full-access"
+      : (request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
