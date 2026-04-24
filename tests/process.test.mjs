@@ -1,7 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { inspectProcess, normalizePid, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+
+test("normalizePid rejects missing and invalid pid values", () => {
+  assert.equal(normalizePid(null), null);
+  assert.equal(normalizePid(""), null);
+  assert.equal(normalizePid(-1), null);
+  assert.equal(normalizePid("123.9"), 123);
+});
+
+test("inspectProcess reports missing and dead pids deterministically", () => {
+  assert.deepEqual(inspectProcess(null), {
+    pid: null,
+    live: false,
+    reason: "missing_pid",
+    detail: "Job has no valid pid."
+  });
+
+  const dead = inspectProcess(1234, {
+    killImpl() {
+      const error = new Error("no such process");
+      error.code = "ESRCH";
+      throw error;
+    }
+  });
+
+  assert.equal(dead.pid, 1234);
+  assert.equal(dead.live, false);
+  assert.equal(dead.reason, "dead_pid");
+  assert.match(dead.detail, /not running/);
+});
 
 test("terminateProcessTree uses taskkill on Windows", () => {
   let captured = null;

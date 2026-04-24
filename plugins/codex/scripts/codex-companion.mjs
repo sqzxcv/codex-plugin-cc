@@ -22,7 +22,7 @@ import {
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
-import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, inspectProcess, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -66,6 +66,7 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
+const DEFAULT_CANCEL_INTERRUPT_TIMEOUT_MS = 5000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
@@ -133,6 +134,11 @@ function normalizeArgv(argv) {
     return splitRawArgumentString(raw);
   }
   return argv;
+}
+
+function resolveCancelInterruptTimeoutMs(env = process.env) {
+  const parsed = Number(env.CODEX_COMPANION_CANCEL_INTERRUPT_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : DEFAULT_CANCEL_INTERRUPT_TIMEOUT_MS;
 }
 
 function parseCommandInput(argv, config = {}) {
@@ -929,8 +935,19 @@ async function handleCancel(argv) {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
+  const previousStatus = job.status;
+  const pidInspection = inspectProcess(job.pid);
+  const interruptTimeoutMs = resolveCancelInterruptTimeoutMs();
 
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  const interrupt =
+    pidInspection.live === false
+      ? {
+          attempted: false,
+          interrupted: false,
+          transport: null,
+          detail: `Skipped Codex turn interrupt because job process is stale (${pidInspection.detail}).`
+        }
+      : await interruptAppServerTurn(cwd, { threadId, turnId, timeoutMs: interruptTimeoutMs });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -940,16 +957,29 @@ async function handleCancel(argv) {
     );
   }
 
-  terminateProcessTree(job.pid ?? Number.NaN);
+  let termination;
+  try {
+    termination = terminateProcessTree(job.pid ?? Number.NaN);
+  } catch (error) {
+    termination = {
+      attempted: true,
+      delivered: false,
+      method: null,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
   const nextJob = {
     ...job,
+    previousStatus,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
     completedAt,
+    cancelledAt: completedAt,
+    staleReconciliationReason: pidInspection.live === false ? pidInspection.reason : null,
     errorMessage: "Cancelled by user."
   };
 
@@ -971,6 +1001,16 @@ async function handleCancel(argv) {
     jobId: job.id,
     status: "cancelled",
     title: job.title,
+    previousStatus,
+    pid: pidInspection.pid,
+    cancelledAt: completedAt,
+    staleReconciliationReason: pidInspection.live === false ? pidInspection.reason : null,
+    process: pidInspection,
+    interrupt: {
+      ...interrupt,
+      timeoutMs: interrupt.attempted ? interruptTimeoutMs : null
+    },
+    termination,
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted
   };

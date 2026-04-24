@@ -545,6 +545,9 @@ rl.on("line", (line) => {
 	          turnId: message.params.turnId
 	        };
 	        saveState(state);
+	        if (BEHAVIOR === "interrupt-hangs") {
+	          break;
+	        }
 	        const pending = interruptibleTurns.get(message.params.turnId);
 	        if (pending) {
 	          clearTimeout(pending.timer);

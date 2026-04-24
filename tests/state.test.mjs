@@ -5,7 +5,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  reconcileActiveJobs,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  writeJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +110,77 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("reconcileActiveJobs marks missing-pid running jobs failed and persists diagnostics", () => {
+  const workspace = makeTempDir();
+  const jobId = "task-stale-missing-pid";
+  const logFile = resolveJobLogFile(workspace, jobId);
+  const job = {
+    id: jobId,
+    status: "running",
+    phase: "running",
+    title: "Codex Task",
+    logFile,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:01.000Z"
+  };
+  fs.writeFileSync(logFile, "[2026-01-01T00:00:00.000Z] Starting Codex Task.\n", "utf8");
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: false },
+    jobs: [job]
+  });
+  writeJobFile(workspace, jobId, job);
+
+  const result = reconcileActiveJobs(workspace);
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.reconciled.map((entry) => entry.reason), ["missing_pid"]);
+  assert.equal(result.jobs[0].status, "failed");
+  assert.equal(result.jobs[0].previousStatus, "running");
+  assert.equal(result.jobs[0].pid, null);
+  assert.equal(result.jobs[0].staleReconciliationReason, "missing_pid");
+  assert.match(result.jobs[0].errorMessage, /auto-reconciled as failed/);
+
+  const persistedState = JSON.parse(fs.readFileSync(resolveStateFile(workspace), "utf8"));
+  assert.equal(persistedState.jobs[0].status, "failed");
+  assert.equal(persistedState.jobs[0].staleReconciliationReason, "missing_pid");
+
+  const persistedJob = JSON.parse(fs.readFileSync(resolveJobFile(workspace, jobId), "utf8"));
+  assert.equal(persistedJob.status, "failed");
+  assert.equal(persistedJob.previousStatus, "running");
+  assert.match(fs.readFileSync(logFile, "utf8"), /Detected stale running job/);
+});
+
+test("reconcileActiveJobs marks dead-pid queued jobs failed", () => {
+  const workspace = makeTempDir();
+  const jobId = "task-stale-dead-pid";
+  const job = {
+    id: jobId,
+    status: "queued",
+    phase: "queued",
+    title: "Codex Task",
+    pid: 424242,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:01.000Z"
+  };
+  saveState(workspace, {
+    version: 1,
+    config: { stopReviewGate: false },
+    jobs: [job]
+  });
+
+  const result = reconcileActiveJobs(workspace, {
+    killImpl() {
+      const error = new Error("no such process");
+      error.code = "ESRCH";
+      throw error;
+    }
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.jobs[0].status, "failed");
+  assert.equal(result.jobs[0].previousStatus, "queued");
+  assert.equal(result.jobs[0].staleReconciliationReason, "dead_pid");
 });

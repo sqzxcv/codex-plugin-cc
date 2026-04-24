@@ -977,6 +977,7 @@ test("status shows phases, hints, and the latest finished job", () => {
             phase: "reviewing",
             threadId: "thr_1",
             summary: "Review working tree diff",
+            pid: process.pid,
             logFile,
             createdAt: "2026-03-18T15:30:00.000Z",
             updatedAt: "2026-03-18T15:30:03.000Z"
@@ -1053,6 +1054,7 @@ test("status without a job id only shows jobs from the current Claude session", 
             sessionId: "sess-current",
             threadId: "thr_current",
             summary: "Current session review",
+            pid: process.pid,
             logFile: currentLog,
             createdAt: "2026-03-18T15:30:00.000Z",
             updatedAt: "2026-03-18T15:30:00.000Z"
@@ -1120,6 +1122,7 @@ test("status preserves adversarial review kind labels", () => {
             phase: "reviewing",
             threadId: "thr_adv_live",
             summary: "Adversarial review current changes",
+            pid: process.pid,
             logFile,
             createdAt: "2026-03-18T15:30:00.000Z",
             updatedAt: "2026-03-18T15:30:00.000Z"
@@ -1192,6 +1195,7 @@ test("status --wait times out cleanly when a job is still active", () => {
             title: "Codex Task",
             jobClass: "task",
             summary: "Investigate flaky test",
+            pid: process.pid,
             logFile,
             createdAt: "2026-03-18T15:30:00.000Z",
             startedAt: "2026-03-18T15:30:01.000Z",
@@ -1496,6 +1500,224 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
   const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
   assert.equal(stored.status, "cancelled");
   assert.match(fs.readFileSync(logFile, "utf8"), /Cancelled by user/);
+});
+
+test("cancel returns deterministic JSON for a missing-pid active job without starting codex", () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "interrupt-hangs");
+
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const logFile = path.join(jobsDir, "task-missing-pid.log");
+  const jobFile = path.join(jobsDir, "task-missing-pid.json");
+  fs.writeFileSync(logFile, "", "utf8");
+  fs.writeFileSync(
+    jobFile,
+    JSON.stringify(
+      {
+        id: "task-missing-pid",
+        status: "running",
+        title: "Codex Task",
+        threadId: "thr_missing",
+        turnId: "turn_missing",
+        logFile
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-missing-pid",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            threadId: "thr_missing",
+            turnId: "turn_missing",
+            logFile,
+            createdAt: "2026-03-18T15:30:00.000Z",
+            updatedAt: "2026-03-18T15:30:02.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const cancel = run("node", [SCRIPT, "cancel", "task-missing-pid", "--json"], {
+    cwd: workspace,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.previousStatus, "running");
+  assert.equal(payload.pid, null);
+  assert.equal(payload.staleReconciliationReason, "missing_pid");
+  assert.equal(payload.interrupt.attempted, false);
+  assert.equal(payload.termination.attempted, false);
+  assert.equal(fs.existsSync(fakeStatePath), false);
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(state.jobs[0].status, "cancelled");
+  assert.equal(state.jobs[0].pid, null);
+
+  const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.cancelledAt, payload.cancelledAt);
+});
+
+test("cancel returns deterministic JSON for a dead-pid active job without app-server interrupt", () => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "interrupt-hangs");
+
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const logFile = path.join(jobsDir, "task-dead-pid.log");
+  fs.writeFileSync(logFile, "", "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-dead-pid",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            pid: 999999,
+            threadId: "thr_dead",
+            turnId: "turn_dead",
+            logFile,
+            createdAt: "2026-03-18T15:30:00.000Z",
+            updatedAt: "2026-03-18T15:30:02.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const cancel = run("node", [SCRIPT, "cancel", "task-dead-pid", "--json"], {
+    cwd: workspace,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.pid, 999999);
+  assert.equal(payload.staleReconciliationReason, "dead_pid");
+  assert.equal(payload.interrupt.attempted, false);
+  assert.equal(payload.termination.attempted, true);
+  assert.equal(payload.termination.delivered, false);
+  assert.equal(fs.existsSync(fakeStatePath), false);
+});
+
+test("cancel bounds a live job app-server interrupt and still terminates the process", async (t) => {
+  const workspace = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "interrupt-hangs");
+
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: workspace,
+    detached: true,
+    stdio: "ignore"
+  });
+  sleeper.unref();
+
+  t.after(() => {
+    try {
+      process.kill(-sleeper.pid, "SIGTERM");
+    } catch {
+      try {
+        process.kill(sleeper.pid, "SIGTERM");
+      } catch {
+        // Ignore missing process.
+      }
+    }
+  });
+
+  const logFile = path.join(jobsDir, "task-timeout.log");
+  fs.writeFileSync(logFile, "", "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [
+          {
+            id: "task-timeout",
+            status: "running",
+            title: "Codex Task",
+            jobClass: "task",
+            pid: sleeper.pid,
+            threadId: "thr_timeout",
+            turnId: "turn_timeout",
+            logFile,
+            createdAt: "2026-03-18T15:30:00.000Z",
+            updatedAt: "2026-03-18T15:30:02.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const cancel = run("node", [SCRIPT, "cancel", "task-timeout", "--json"], {
+    cwd: workspace,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_CANCEL_INTERRUPT_TIMEOUT_MS: "50"
+    }
+  });
+
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.status, "cancelled");
+  assert.equal(payload.interrupt.attempted, true);
+  assert.equal(payload.interrupt.interrupted, false);
+  assert.equal(payload.interrupt.timeoutMs, 50);
+  assert.match(payload.interrupt.detail, /Timed out after 50ms/);
+  assert.equal(payload.termination.attempted, true);
+
+  await waitFor(() => {
+    try {
+      process.kill(sleeper.pid, 0);
+      return false;
+    } catch (error) {
+      return error?.code === "ESRCH";
+    }
+  });
 });
 
 test("cancel without a job id ignores active jobs from other Claude sessions", () => {

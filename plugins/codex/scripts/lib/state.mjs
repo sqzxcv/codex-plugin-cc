@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { inspectProcess } from "./process.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -87,6 +88,113 @@ function removeFileIfExists(filePath) {
   if (filePath && fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
+}
+
+function isActiveJob(job) {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function staleReasonDetail(inspection) {
+  if (inspection.reason === "missing_pid") {
+    return "missing pid";
+  }
+  if (inspection.reason === "dead_pid") {
+    return inspection.pid == null ? "dead pid" : `pid ${inspection.pid} is not running`;
+  }
+  return inspection.detail ?? "stale process";
+}
+
+function appendStaleJobLog(job, message) {
+  if (!job?.logFile) {
+    return;
+  }
+  try {
+    fs.appendFileSync(job.logFile, `[${nowIso()}] ${message}\n`, "utf8");
+  } catch {
+    // Best-effort diagnostics; reconciliation should not fail on log writes.
+  }
+}
+
+function persistJobFilePatch(cwd, jobId, patch) {
+  const jobFile = resolveJobFile(cwd, jobId);
+  if (!fs.existsSync(jobFile)) {
+    return;
+  }
+  try {
+    writeJobFile(cwd, jobId, {
+      ...readJobFile(jobFile),
+      ...patch
+    });
+  } catch {
+    // Ignore malformed or concurrently removed job files; state.json remains authoritative.
+  }
+}
+
+function buildStaleActiveJobPatch(job, inspection, timestamp) {
+  const reason = inspection.reason ?? "stale_process";
+  const detail = staleReasonDetail(inspection);
+  return {
+    ...job,
+    previousStatus: job.status,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    completedAt: timestamp,
+    staleReconciledAt: timestamp,
+    staleReconciliationReason: reason,
+    errorMessage: `Codex job was ${job.status} but its tracked process is stale (${detail}); auto-reconciled as failed.`,
+    updatedAt: timestamp
+  };
+}
+
+export function reconcileActiveJobs(cwd, options = {}) {
+  const state = loadState(cwd);
+  const timestamp = nowIso();
+  const reconciled = [];
+  let changed = false;
+
+  const jobs = (state.jobs ?? []).map((job) => {
+    if (!isActiveJob(job)) {
+      return job;
+    }
+    if (options.predicate && !options.predicate(job)) {
+      return job;
+    }
+
+    const inspection = inspectProcess(job.pid, options);
+    if (inspection.live !== false) {
+      return job;
+    }
+
+    changed = true;
+    const nextJob = buildStaleActiveJobPatch(job, inspection, timestamp);
+    reconciled.push({
+      id: job.id,
+      previousStatus: job.status,
+      pid: inspection.pid,
+      reason: inspection.reason,
+      completedAt: timestamp
+    });
+    appendStaleJobLog(
+      job,
+      `Detected stale ${job.status} job (${staleReasonDetail(inspection)}). Marked as failed automatically.`
+    );
+    persistJobFilePatch(cwd, job.id, nextJob);
+    return nextJob;
+  });
+
+  if (changed) {
+    saveState(cwd, {
+      ...state,
+      jobs
+    });
+  }
+
+  return {
+    changed,
+    reconciled,
+    jobs
+  };
 }
 
 export function saveState(cwd, state) {

@@ -35,7 +35,7 @@
  * }} TurnCaptureState
  */
 import { readJsonFile } from "./fs.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient, forceCloseAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 
@@ -863,7 +863,27 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   }
 }
 
-export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeout = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      timeout.unref?.();
+    })
+  ]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
+export async function interruptAppServerTurn(cwd, { threadId, turnId, timeoutMs = null } = {}) {
   if (!threadId || !turnId) {
     return {
       attempted: false,
@@ -884,9 +904,22 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
 
   let client = null;
+  let forceClosed = false;
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-    await client.request("turn/interrupt", { threadId, turnId });
+    const boundMs = parsePositiveInteger(timeoutMs, 0);
+    client =
+      boundMs > 0
+        ? await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, initializeTimeoutMs: boundMs })
+        : await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+    if (boundMs > 0) {
+      await withTimeout(
+        client.request("turn/interrupt", { threadId, turnId }),
+        boundMs,
+        `Timed out after ${boundMs}ms while interrupting ${turnId} on ${threadId}.`
+      );
+    } else {
+      await client.request("turn/interrupt", { threadId, turnId });
+    }
     return {
       attempted: true,
       interrupted: true,
@@ -894,6 +927,8 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       detail: `Interrupted ${turnId} on ${threadId}.`
     };
   } catch (error) {
+    forceCloseAppServerClient(client);
+    forceClosed = true;
     return {
       attempted: true,
       interrupted: false,
@@ -901,7 +936,9 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       detail: error instanceof Error ? error.message : String(error)
     };
   } finally {
-    await client?.close().catch(() => {});
+    if (!forceClosed) {
+      await client?.close().catch(() => {});
+    }
   }
 }
 

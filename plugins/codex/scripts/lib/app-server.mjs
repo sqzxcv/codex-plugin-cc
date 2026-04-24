@@ -40,6 +40,63 @@ const DEFAULT_CAPABILITIES = {
   ]
 };
 
+function parsePositiveInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+export function forceCloseAppServerClient(client) {
+  if (!client) {
+    return;
+  }
+
+  try {
+    client.readline?.close();
+  } catch {
+    // Best-effort cleanup after a bounded initialize timeout.
+  }
+  try {
+    client.socket?.destroy();
+  } catch {
+    // Best-effort cleanup after a bounded initialize timeout.
+  }
+  try {
+    if (client.proc && !client.proc.killed && client.proc.exitCode === null) {
+      client.proc.kill("SIGTERM");
+      setTimeout(() => {
+        try {
+          if (client.proc && !client.proc.killed && client.proc.exitCode === null) {
+            client.proc.kill("SIGKILL");
+          }
+        } catch {
+          // Best-effort cleanup from an unref'd timer.
+        }
+      }, 50).unref?.();
+    }
+  } catch {
+    // Best-effort cleanup after a bounded initialize timeout.
+  }
+  client.close?.().catch(() => {});
+}
+
+function initializeWithTimeout(client, timeoutMs) {
+  let timeout = null;
+  return Promise.race([
+    client.initialize(),
+    new Promise((_, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error(`Timed out after ${timeoutMs}ms while connecting to codex app-server.`)),
+        timeoutMs
+      );
+      timeout.unref?.();
+    })
+  ]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
 function buildJsonRpcError(code, message, data) {
   return data === undefined ? { code, message } : { code, message, data };
 }
@@ -344,7 +401,17 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
-    return client;
+    try {
+      const initializeTimeoutMs = parsePositiveInteger(options.initializeTimeoutMs);
+      if (initializeTimeoutMs > 0) {
+        await initializeWithTimeout(client, initializeTimeoutMs);
+      } else {
+        await client.initialize();
+      }
+      return client;
+    } catch (error) {
+      forceCloseAppServerClient(client);
+      throw error;
+    }
   }
 }
