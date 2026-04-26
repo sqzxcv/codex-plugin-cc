@@ -21,7 +21,7 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, detectVcs, ensureGitRepository, resolveReviewTarget } from "./lib/vcs.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -362,7 +362,12 @@ async function executeReviewRun(request) {
   });
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
-  if (reviewName === "Review") {
+  // The Codex native reviewer (runAppServerReview) only understands git
+  // internally — it runs git commands to collect diffs. For jj repos we fall
+  // through to the context-collection path which uses our jj backend to
+  // gather diffs and feeds them to Codex via runAppServerTurn.
+  const useNativeReviewer = reviewName === "Review" && detectVcs(request.cwd) === "git";
+  if (useNativeReviewer) {
     const reviewTarget = validateNativeReviewRequest(target, focusText);
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
