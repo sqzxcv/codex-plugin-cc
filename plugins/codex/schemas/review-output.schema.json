@@ -35,7 +35,8 @@
           "confidence",
           "recommendation",
           "blocker_class",
-          "merge_impact"
+          "merge_impact",
+          "follow_up_ticket"
         ],
         "properties": {
           "severity": {
@@ -93,8 +94,7 @@
             ]
           },
           "follow_up_ticket": {
-            "type": "string",
-            "pattern": "^AET-[1-9][0-9]*$"
+            "type": "string"
           }
         }
       }

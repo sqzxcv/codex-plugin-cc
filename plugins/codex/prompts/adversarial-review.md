@@ -58,7 +58,7 @@ Every finding must include:
 - a concrete recommendation
 - `blocker_class`: one of `runtime_or_behavioral_regression`, `trust_or_safety`, `contract_or_evidence`, `architecture_or_scope`
 - `merge_impact`: one of `merge_blocker`, `follow_up_debt`, `non_blocking_polish`
-- `follow_up_ticket` when `merge_impact` is `follow_up_debt`, formatted as `AET-<number>`
+- `follow_up_ticket`: formatted as `AET-<number>` when `merge_impact` is `follow_up_debt`; otherwise use an empty string
 Write the summary like a terse ship/no-ship assessment, not a neutral recap.
 </structured_output_contract>
 
