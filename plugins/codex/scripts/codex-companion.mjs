@@ -21,6 +21,7 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
+import { readTaskPrompt } from "./lib/task-prompt.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -610,14 +611,6 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
   };
 }
 
-function readTaskPrompt(cwd, options, positionals) {
-  if (options["prompt-file"]) {
-    return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
-  }
-
-  const positionalPrompt = positionals.join(" ");
-  return positionalPrompt || readStdinIfPiped();
-}
 
 function requireTaskRequest(prompt, resumeLast) {
   if (!prompt && !resumeLast) {
