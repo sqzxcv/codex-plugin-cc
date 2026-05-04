@@ -102,7 +102,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /run the `codex:codex-rescue` subagent in the background/i);
   assert.match(rescue, /default to foreground/i);
   assert.match(rescue, /Do not forward them to `task`/i);
-  assert.match(rescue, /`--model` and `--effort` are runtime-selection flags/i);
+  assert.match(rescue, /`--model`, `--effort`, and `--context` are runtime-selection flags/i);
   assert.match(rescue, /Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort/i);
   assert.match(rescue, /If they ask for `spark`, map it to `gpt-5\.3-codex-spark`/i);
   assert.match(rescue, /If the request includes `--resume`, do not ask whether to continue/i);
