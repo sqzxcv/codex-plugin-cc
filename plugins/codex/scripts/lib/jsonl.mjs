@@ -32,16 +32,25 @@
  * that fails the caller surfaces a real protocol error as before.
  */
 
-// CSI:  ESC [ … final-byte                  (e.g. \x1b[?2004h, \x1b[31m)
-// OSC:  ESC ] … (BEL | ESC \)               (e.g. window-title sets)
+// CSI: ESC [ <params> <intermediates> <final>
+//      params       = 0x30..0x3F (digits, ?, etc.)
+//      intermediates= 0x20..0x2F (space, !, ", $, %, &, ', (, ), *, +, ,, -, ., /)
+//      final        = 0x40..0x7E (any byte in @, A..Z, [, \, ], ^, _, `, a..z, {, |, }, ~)
+// This grammar matches the original ECMA-48 spec and covers cases like
+// bracketed-paste *content* markers `\x1b[200~` / `\x1b[201~` (final
+// byte `~`) which a letter-only `[a-zA-Z]` final misses.
+// OSC: ESC ] <text> (BEL | ESC \)            e.g. window-title sets
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+const ANSI_ESCAPE_RE = /\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 
 /**
  * Returns a JSON-shaped candidate string for the given raw line, or
  * `null` if the line should be skipped because it cannot be valid JSONL.
  *
- * @param {string} rawLine
+ * Accepts arbitrary input — non-string values short-circuit to `null` so
+ * callers don't have to type-check before invoking.
+ *
+ * @param {unknown} rawLine
  * @returns {string | null}
  */
 export function cleanProtocolLine(rawLine) {

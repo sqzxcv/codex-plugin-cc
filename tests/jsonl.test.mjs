@@ -35,6 +35,20 @@ test("cleanProtocolLine strips bracketed-paste-mode ANSI prefix (issue #23)", ()
   );
 });
 
+test("cleanProtocolLine strips CSI sequences whose final byte is not a letter", () => {
+  // Bracketed-paste content markers use `~` as the final byte. A
+  // letter-only CSI final pattern (`[a-zA-Z]`) misses them and the
+  // surrounding JSON would be incorrectly dropped by the first-char
+  // guard. ECMA-48's CSI grammar allows any final byte in 0x40..0x7E.
+  assert.equal(
+    cleanProtocolLine('\x1b[200~{"id":1}\x1b[201~'),
+    '{"id":1}'
+  );
+  // Other non-letter finals at the boundaries of the 0x40..0x7E range.
+  assert.equal(cleanProtocolLine('\x1b[@{"id":1}'), '{"id":1}'); // 0x40
+  assert.equal(cleanProtocolLine('\x1b[`{"id":1}'), '{"id":1}'); // 0x60
+});
+
 test("cleanProtocolLine strips OSC window-title sequences", () => {
   assert.equal(
     cleanProtocolLine('\x1b]0;some title\x07{"id":1}'),
