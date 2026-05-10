@@ -293,6 +293,24 @@ function describeCompletedItem(state, item) {
   }
 }
 
+/**
+ * Thrown by captureTurn when no JSON-RPC notification arrives within the
+ * configured watchdog window. Wrappers can detect via `instanceof` or by
+ * `error.code === 'TURN_WATCHDOG_TIMEOUT'` and propagate exit code 124
+ * (matching `timeout(1)` convention).
+ */
+export class TurnWatchdogError extends Error {
+  constructor(message, { watchdogMs, threadId, turnId } = {}) {
+    super(message);
+    this.name = "TurnWatchdogError";
+    this.code = "TURN_WATCHDOG_TIMEOUT";
+    this.exitCode = 124;
+    this.watchdogMs = watchdogMs ?? null;
+    this.threadId = threadId ?? null;
+    this.turnId = turnId ?? null;
+  }
+}
+
 /** @returns {TurnCaptureState} */
 function createTurnCaptureState(threadId, options = {}) {
   let resolveCompletion;
@@ -319,6 +337,11 @@ function createTurnCaptureState(threadId, options = {}) {
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
+    watchdogTimer: null,
+    watchdogMs:
+      typeof options.watchdogMs === "number" && options.watchdogMs > 0
+        ? options.watchdogMs
+        : null,
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -337,12 +360,54 @@ function clearCompletionTimer(state) {
   }
 }
 
+function disarmWatchdog(state) {
+  if (state.watchdogTimer) {
+    clearTimeout(state.watchdogTimer);
+    state.watchdogTimer = null;
+  }
+}
+
+function armWatchdog(state) {
+  if (!state.watchdogMs || state.completed) {
+    return;
+  }
+  disarmWatchdog(state);
+  state.watchdogTimer = setTimeout(() => {
+    state.watchdogTimer = null;
+    if (state.completed) {
+      return;
+    }
+    state.completed = true;
+    clearCompletionTimer(state);
+    const message =
+      `Codex turn watchdog fired after ${state.watchdogMs}ms of silence ` +
+      `(thread ${state.threadId}, turn ${state.turnId ?? "pending"}). ` +
+      `No JSON-RPC notification arrived in that window.`;
+    state.rejectCompletion(
+      new TurnWatchdogError(message, {
+        watchdogMs: state.watchdogMs,
+        threadId: state.threadId,
+        turnId: state.turnId
+      })
+    );
+  }, state.watchdogMs);
+  state.watchdogTimer.unref?.();
+}
+
+function kickWatchdog(state) {
+  if (!state.watchdogMs || state.completed) {
+    return;
+  }
+  armWatchdog(state);
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
   }
 
   clearCompletionTimer(state);
+  disarmWatchdog(state);
   state.completed = true;
 
   if (turn) {
@@ -555,6 +620,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const previousHandler = client.notificationHandler;
 
   client.setNotificationHandler((message) => {
+    kickWatchdog(state);
+
     if (!state.turnId) {
       state.bufferedNotifications.push(message);
       return;
@@ -576,6 +643,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   });
 
   try {
+    armWatchdog(state);
     const response = await startRequest();
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
@@ -600,6 +668,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     return await state.completion;
   } finally {
     clearCompletionTimer(state);
+    disarmWatchdog(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }
@@ -1009,7 +1078,13 @@ export async function runAppServerTurn(cwd, options = {}) {
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null
         }),
-      { onProgress: options.onProgress }
+      {
+        onProgress: options.onProgress,
+        watchdogMs:
+          typeof options.watchdogMs === "number"
+            ? options.watchdogMs
+            : Number(process.env.CODEX_TURN_WATCHDOG_MS) || null
+      }
     );
 
     return {
