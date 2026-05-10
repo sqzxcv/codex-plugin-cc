@@ -18,7 +18,8 @@ import {
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
-    runAppServerTurn
+    runAppServerTurn,
+    TurnWatchdogError
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -1021,6 +1022,19 @@ async function main() {
 }
 
 main().catch((error) => {
+  if (error instanceof TurnWatchdogError) {
+    process.stderr.write(
+      JSON.stringify({
+        error: "TurnWatchdogTimeout",
+        message: error.message,
+        watchdogMs: error.watchdogMs,
+        threadId: error.threadId,
+        turnId: error.turnId
+      }) + "\n"
+    );
+    process.exitCode = error.exitCode ?? 124;
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
