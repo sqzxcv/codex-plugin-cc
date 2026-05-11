@@ -11,6 +11,8 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:cli` for direct Codex CLI task execution without the rescue subagent
+- `/codex:goal` to set a persistent goal Codex can continue over time
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
@@ -161,6 +163,45 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+
+### `/codex:cli`
+
+Runs a direct Codex CLI task through the companion runtime, without routing through the rescue subagent.
+
+Use it when you want exact control over a Codex task from Claude Code.
+
+Examples:
+
+```bash
+/codex:cli investigate why the build fails
+/codex:cli --write fix the failing parser test
+/codex:cli --resume continue the current goal
+/codex:cli --background --write implement the migration
+```
+
+It supports `--background`, `--write`, `--resume`, `--fresh`, `--model`, and `--effort`. By default it is read-only; pass `--write` when Codex should edit files.
+
+### `/codex:goal`
+
+Sets or manages a persistent goal Codex can continue over time.
+
+Use it when a task is larger than one turn and you want Codex to keep a durable objective attached to the Codex thread.
+
+Examples:
+
+```bash
+/codex:goal --fresh --budget 80000 finish the auth migration with tests passing
+/codex:goal --show
+/codex:goal --status paused
+/codex:goal --status complete
+/codex:goal --clear
+```
+
+After setting a goal, continue it from Claude Code with:
+
+```bash
+/codex:cli --resume
+```
 
 ### `/codex:status`
 

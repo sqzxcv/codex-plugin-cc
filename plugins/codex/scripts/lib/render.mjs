@@ -322,6 +322,38 @@ export function renderTaskResult(parsedResult, meta) {
   return `${message}\n`;
 }
 
+export function renderGoalReport(report) {
+  const lines = ["# Codex Goal", ""];
+  const action = report?.action ?? "show";
+
+  if (action === "clear") {
+    lines.push(`Goal cleared for thread ${report.threadId}.`);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  const goal = report?.goal ?? null;
+  const threadId = goal?.threadId ?? report?.threadId ?? null;
+  if (!goal) {
+    lines.push("No Codex goal is set for this repository.");
+    if (threadId) {
+      lines.push(`Thread: ${threadId}`);
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  const tokenBudget = goal.tokenBudget == null ? "unlimited" : String(goal.tokenBudget);
+  lines.push(`Thread: ${goal.threadId}`);
+  lines.push(`Objective: ${goal.objective}`);
+  lines.push(`Status: ${goal.status}`);
+  lines.push(`Token budget: ${tokenBudget}`);
+  lines.push(`Tokens used: ${goal.tokensUsed}`);
+  lines.push(`Time used: ${goal.timeUsedSeconds}s`);
+  lines.push(`Resume in Codex: codex resume ${goal.threadId}`);
+  lines.push("Continue from Claude Code: /codex:cli --resume");
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 export function renderStatusReport(report) {
   const lines = [
     "# Codex Status",

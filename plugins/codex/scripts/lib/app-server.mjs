@@ -30,7 +30,7 @@ const DEFAULT_CLIENT_INFO = {
 };
 
 /** @type {InitializeCapabilities} */
-const DEFAULT_CAPABILITIES = {
+export const DEFAULT_CAPABILITIES = {
   experimentalApi: false,
   optOutNotificationMethods: [
     "item/agentMessage/delta",
@@ -38,6 +38,11 @@ const DEFAULT_CAPABILITIES = {
     "item/reasoning/summaryPartAdded",
     "item/reasoning/textDelta"
   ]
+};
+
+export const EXPERIMENTAL_CAPABILITIES = {
+  ...DEFAULT_CAPABILITIES,
+  experimentalApi: true
 };
 
 function buildJsonRpcError(code, message, data) {

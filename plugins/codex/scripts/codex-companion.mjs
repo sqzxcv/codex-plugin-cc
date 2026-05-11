@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
+    clearThreadGoal,
     DEFAULT_CONTINUE_PROMPT,
     findLatestTaskThread,
     getCodexAuthStatus,
@@ -16,9 +17,12 @@ import {
     getSessionRuntimeStatus,
     interruptAppServerTurn,
     parseStructuredOutput,
+    readThreadGoal,
     readOutputSchema,
     runAppServerReview,
-    runAppServerTurn
+    runAppServerTurn,
+    setThreadGoal,
+    startPersistentGoalThread
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -56,6 +60,7 @@ import {
   renderReviewResult,
   renderStoredJobResult,
   renderCancelReport,
+  renderGoalReport,
   renderJobStatusReport,
   renderSetupReport,
   renderStatusReport,
@@ -67,8 +72,10 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const VALID_GOAL_STATUSES = new Set(["active", "paused", "budgetLimited", "complete"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const GOAL_THREAD_CONFIG_KEY = "goalThreadId";
 
 function printUsage() {
   console.log(
@@ -78,6 +85,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs cli [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs goal [--show|--clear] [--fresh|--resume|--thread-id <id>] [--budget <tokens>] [--status <active|paused|budgetLimited|complete>] [objective]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -122,6 +131,39 @@ function normalizeReasoningEffort(effort) {
     );
   }
   return normalized;
+}
+
+function normalizeGoalStatus(status) {
+  if (status == null) {
+    return null;
+  }
+  const normalized = String(status).trim();
+  if (!normalized) {
+    return null;
+  }
+  const canonical = normalized === "budget-limited" ? "budgetLimited" : normalized;
+  if (!VALID_GOAL_STATUSES.has(canonical)) {
+    throw new Error("Unsupported goal status. Use one of: active, paused, budgetLimited, complete.");
+  }
+  return canonical;
+}
+
+function normalizeGoalBudget(value) {
+  if (value == null) {
+    return undefined;
+  }
+  const raw = String(value).trim().toLowerCase();
+  if (!raw) {
+    return undefined;
+  }
+  if (raw === "none" || raw === "unlimited" || raw === "null") {
+    return null;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("Goal budget must be a positive integer token count, or `none`.");
+  }
+  return parsed;
 }
 
 function normalizeArgv(argv) {
@@ -338,6 +380,11 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
     throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
+  }
+
+  const config = getConfig(workspaceRoot);
+  if (typeof config[GOAL_THREAD_CONFIG_KEY] === "string" && config[GOAL_THREAD_CONFIG_KEY].trim()) {
+    return { id: config[GOAL_THREAD_CONFIG_KEY].trim() };
   }
 
   const trackedTask = findLatestResumableTaskJob(visibleJobs);
@@ -619,6 +666,62 @@ function readTaskPrompt(cwd, options, positionals) {
   return positionalPrompt || readStdinIfPiped();
 }
 
+function readGoalObjective(cwd, options, positionals) {
+  if (options["objective-file"]) {
+    return fs.readFileSync(path.resolve(cwd, options["objective-file"]), "utf8").trim();
+  }
+  return positionals.join(" ").trim();
+}
+
+function getStoredGoalThreadId(workspaceRoot) {
+  const config = getConfig(workspaceRoot);
+  const threadId = config[GOAL_THREAD_CONFIG_KEY];
+  return typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+}
+
+function storeGoalThreadId(workspaceRoot, threadId) {
+  setConfig(workspaceRoot, GOAL_THREAD_CONFIG_KEY, threadId);
+}
+
+async function resolveGoalThread(cwd, workspaceRoot, options, objective) {
+  if (options["thread-id"]) {
+    return { id: String(options["thread-id"]).trim(), created: false };
+  }
+
+  if (options.fresh) {
+    const thread = await startPersistentGoalThread(cwd, { objective });
+    storeGoalThreadId(workspaceRoot, thread.id);
+    return { id: thread.id, created: true };
+  }
+
+  const storedThreadId = getStoredGoalThreadId(workspaceRoot);
+  if (storedThreadId) {
+    return { id: storedThreadId, created: false };
+  }
+
+  if (!objective) {
+    return { id: null, created: false };
+  }
+
+  const thread = await startPersistentGoalThread(cwd, { objective });
+  storeGoalThreadId(workspaceRoot, thread.id);
+  return { id: thread.id, created: true };
+}
+
+function buildGoalSetParams({ objective, status, tokenBudget }) {
+  const params = {};
+  if (objective) {
+    params.objective = objective;
+  }
+  if (status) {
+    params.status = status;
+  }
+  if (tokenBudget !== undefined) {
+    params.tokenBudget = tokenBudget;
+  }
+  return params;
+}
+
 function requireTaskRequest(prompt, resumeLast) {
   if (!prompt && !resumeLast) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
@@ -789,6 +892,81 @@ async function handleTask(argv) {
         onProgress: progress
       }),
     { json: options.json }
+  );
+}
+
+async function handleGoal(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "thread-id", "budget", "status", "objective-file"],
+    booleanOptions: ["json", "show", "clear", "fresh", "resume"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const objective = readGoalObjective(cwd, options, positionals);
+  const status = normalizeGoalStatus(options.status);
+  const tokenBudget = normalizeGoalBudget(options.budget);
+
+  if (options.clear && (objective || status || tokenBudget !== undefined)) {
+    throw new Error("Use `--clear` by itself, optionally with `--thread-id`.");
+  }
+  if (options.fresh && options["thread-id"]) {
+    throw new Error("Choose either --fresh or --thread-id.");
+  }
+  if (options.resume && options.fresh) {
+    throw new Error("Choose either --resume or --fresh.");
+  }
+
+  const shouldCreate = Boolean(objective && !options.clear && !options.show);
+  const thread = await resolveGoalThread(cwd, workspaceRoot, options, shouldCreate ? objective : "");
+
+  if (!thread.id) {
+    outputCommandResult(
+      { action: "show", threadId: null, goal: null },
+      renderGoalReport({ action: "show", threadId: null, goal: null }),
+      options.json
+    );
+    return;
+  }
+
+  if (options.clear) {
+    const result = await clearThreadGoal(cwd, thread.id);
+    if (!options["thread-id"]) {
+      storeGoalThreadId(workspaceRoot, null);
+    }
+    outputCommandResult(
+      { action: "clear", threadId: thread.id, cleared: Boolean(result.cleared) },
+      renderGoalReport({ action: "clear", threadId: thread.id, cleared: Boolean(result.cleared) }),
+      options.json
+    );
+    return;
+  }
+
+  if (options.show || (!objective && !status && tokenBudget === undefined)) {
+    const goal = await readThreadGoal(cwd, thread.id);
+    outputCommandResult(
+      { action: "show", threadId: thread.id, goal },
+      renderGoalReport({ action: "show", threadId: thread.id, goal }),
+      options.json
+    );
+    return;
+  }
+
+  const goal = await setThreadGoal(
+    cwd,
+    thread.id,
+    buildGoalSetParams({
+      objective,
+      status,
+      tokenBudget
+    })
+  );
+  storeGoalThreadId(workspaceRoot, thread.id);
+
+  outputCommandResult(
+    { action: thread.created ? "create" : "update", threadId: thread.id, goal },
+    renderGoalReport({ action: thread.created ? "create" : "update", threadId: thread.id, goal }),
+    options.json
   );
 }
 
@@ -999,6 +1177,12 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "cli":
+      await handleTask(argv);
+      break;
+    case "goal":
+      await handleGoal(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);
