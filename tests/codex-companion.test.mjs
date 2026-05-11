@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildAdversarialReviewPrompt } from '../plugins/codex/scripts/codex-companion.mjs';
+import {
+  buildAdversarialReviewPrompt,
+  buildLightweightAdversarialReviewContent
+} from '../plugins/codex/scripts/codex-companion.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -123,4 +126,51 @@ test('buildAdversarialReviewPrompt: utf8 byte accounting stays under cap', () =>
   assert.equal(Buffer.byteLength(content, 'utf8'), 750 * 1024);
   assert.ok(Buffer.byteLength(result, 'utf8') <= MAX_PROMPT_BYTES);
   assert.equal(result.includes('あ'), true);
+});
+
+test('buildLightweightAdversarialReviewContent sanitizes bidi override filenames', () => {
+  // Given: { changedFiles: ['evil‮reversed.ts'] }
+  // When:  buildLightweightAdversarialReviewContent(context)
+  // Then:  raw ‮ を含まず、\u202e を含み、filename 部分が JSON quote される
+  const context = {
+    changedFiles: ['evil‮reversed.ts']
+  };
+
+  const result = buildLightweightAdversarialReviewContent(context);
+
+  assert.equal(result.includes('‮'), false);
+  assert.equal(result.includes('\\u202e'), true);
+  assert.match(result, /"evil\\u202ereversed\.ts"/);
+});
+
+test('buildLightweightAdversarialReviewContent sanitizes bidi isolate filenames', () => {
+  // Given: { changedFiles: ['x⁦isolate⁩y.ts'] }
+  // When:  buildLightweightAdversarialReviewContent(context)
+  // Then:  raw ⁦ / ⁩ を含まず、\u2066 / \u2069 を含む
+  const context = {
+    changedFiles: ['x⁦isolate⁩y.ts']
+  };
+
+  const result = buildLightweightAdversarialReviewContent(context);
+
+  assert.equal(result.includes('⁦'), false);
+  assert.equal(result.includes('⁩'), false);
+  assert.equal(result.includes('\\u2066'), true);
+  assert.equal(result.includes('\\u2069'), true);
+});
+
+test('buildLightweightAdversarialReviewContent JSON-stringifies summary content', () => {
+  // Given: { summary: 'evil‮hiddenSummary', changedFiles: [] }
+  // When:  buildLightweightAdversarialReviewContent(context)
+  // Then:  Summary 行は raw ‮ を含まず、\u202e を含み、JSON.stringify 形式になる
+  const context = {
+    summary: 'evil‮hiddenSummary',
+    changedFiles: []
+  };
+
+  const result = buildLightweightAdversarialReviewContent(context);
+
+  assert.equal(result.includes('Summary: "evil\\u202ehiddenSummary"'), true);
+  assert.equal(result.includes('‮'), false);
+  assert.equal(result.includes('\\u202e'), true);
 });

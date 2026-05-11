@@ -3,17 +3,21 @@ import path from "node:path";
 
 import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
+import {
+  escapeRenderUnsafeChars,
+  sanitizeFilenamesForPrompt
+} from "./prompt-sanitize.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 
 function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
+  return runCommand("git", ["-c", "core.quotePath=false", ...args], { cwd, ...options });
 }
 
 function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options });
+  return runCommandChecked("git", ["-c", "core.quotePath=false", ...args], { cwd, ...options });
 }
 
 function listUniqueFiles(...groups) {
@@ -195,35 +199,38 @@ function formatSection(title, body) {
 
 function formatUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
+  const displayPath = escapeRenderUnsafeChars(relativePath);
   let stat;
   try {
     stat = fs.statSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return `### ${displayPath}\n(skipped: broken symlink or unreadable file)`;
   }
   if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
+    return `### ${displayPath}\n(skipped: directory)`;
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    return `### ${displayPath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
   }
 
   let buffer;
   try {
     buffer = fs.readFileSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return `### ${displayPath}\n(skipped: broken symlink or unreadable file)`;
   }
   if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
+    return `### ${displayPath}\n(skipped: binary file)`;
   }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  return [`### ${displayPath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
 }
 
 function collectWorkingTreeContext(cwd, state, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const status = escapeRenderUnsafeChars(
+    gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim()
+  );
   const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
 
   let parts;
@@ -245,7 +252,7 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
       formatSection("Unstaged Diff Stat", unstagedStat),
-      formatSection("Changed Files", changedFiles.join("\n")),
+      formatSection("Changed Files", sanitizeFilenamesForPrompt(changedFiles)),
       formatSection("Untracked Files", untrackedBody)
     ];
   }
@@ -264,7 +271,9 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const currentBranch = getCurrentBranch(cwd);
   const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  const diffStat = escapeRenderUnsafeChars(
+    gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim()
+  );
 
   return {
     mode: "branch",
@@ -281,7 +290,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
       : [
           formatSection("Commit Log", logOutput),
           formatSection("Diff Stat", diffStat),
-          formatSection("Changed Files", changedFiles.join("\n"))
+          formatSection("Changed Files", sanitizeFilenamesForPrompt(changedFiles))
         ].join("\n"),
     changedFiles,
     comparison

@@ -22,6 +22,10 @@ import {
   } from "./lib/codex.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import {
+  escapeRenderUnsafeChars,
+  sanitizeFilenamesForPrompt
+} from "./lib/prompt-sanitize.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -296,14 +300,19 @@ function renderAdversarialReviewPrompt(template, context, focusText, guidance, c
   });
 }
 
-function buildLightweightAdversarialReviewContent(context) {
+export function buildLightweightAdversarialReviewContent(context) {
   const parts = [];
 
   if (context.summary) {
-    parts.push(`Summary: ${context.summary}`);
+    parts.push(
+      `Summary: ${JSON.stringify(escapeRenderUnsafeChars(String(context.summary))).replace(/\\\\u([0-9a-f]{4})/g, "\\u$1")}`
+    );
   }
   if (Array.isArray(context.changedFiles) && context.changedFiles.length > 0) {
-    parts.push(`Changed files (${context.changedFiles.length}):\n${context.changedFiles.slice(0, 50).join("\n")}`);
+    const limited = context.changedFiles.slice(0, 50);
+    parts.push(
+      `Changed files (${context.changedFiles.length}):\n${sanitizeFilenamesForPrompt(limited)}`
+    );
   } else if (typeof context.fileCount === "number") {
     parts.push(`Changed file count: ${context.fileCount}`);
   }
