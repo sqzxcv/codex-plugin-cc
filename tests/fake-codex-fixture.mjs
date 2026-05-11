@@ -34,6 +34,10 @@ function requiresExperimental(field, message, state) {
   return !state.capabilities || state.capabilities.experimentalApi !== true;
 }
 
+function requiresExperimentalApi(state) {
+  return !state.capabilities || state.capabilities.experimentalApi !== true;
+}
+
 function now() {
   return Math.floor(Date.now() / 1000);
 }
@@ -56,6 +60,28 @@ function buildThread(thread) {
     gitInfo: null,
     name: thread.name || null,
     turns: []
+  };
+}
+
+function buildGoal(thread, params) {
+  const existing = thread.goal || null;
+  if (!existing && !params.objective) {
+    throw new Error("cannot update goal for thread " + thread.id + ": no goal exists");
+  }
+  const nowSeconds = now();
+  return {
+    threadId: thread.id,
+    objective: params.objective || existing.objective,
+    status: params.status || (existing ? existing.status : "active"),
+    tokenBudget: Object.prototype.hasOwnProperty.call(params, "tokenBudget")
+      ? params.tokenBudget
+      : existing
+        ? existing.tokenBudget
+        : null,
+    tokensUsed: existing ? existing.tokensUsed : 0,
+    timeUsedSeconds: existing ? existing.timeUsedSeconds : 0,
+    createdAt: existing ? existing.createdAt : nowSeconds,
+    updatedAt: nowSeconds
   };
 }
 
@@ -335,6 +361,41 @@ rl.on("line", (line) => {
         break;
       }
 
+      case "thread/goal/get": {
+        if (requiresExperimentalApi(state)) {
+          throw new Error("thread/goal/get requires experimentalApi capability");
+        }
+        const thread = ensureThread(state, message.params.threadId);
+        send({ id: message.id, result: { goal: thread.goal || null } });
+        break;
+      }
+
+      case "thread/goal/set": {
+        if (requiresExperimentalApi(state)) {
+          throw new Error("thread/goal/set requires experimentalApi capability");
+        }
+        const thread = ensureThread(state, message.params.threadId);
+        thread.goal = buildGoal(thread, message.params);
+        thread.updatedAt = now();
+        saveState(state);
+        send({ id: message.id, result: { goal: thread.goal } });
+        send({ method: "thread/goal/updated", params: { threadId: thread.id, turnId: null, goal: thread.goal } });
+        break;
+      }
+
+      case "thread/goal/clear": {
+        if (requiresExperimentalApi(state)) {
+          throw new Error("thread/goal/clear requires experimentalApi capability");
+        }
+        const thread = ensureThread(state, message.params.threadId);
+        thread.goal = null;
+        thread.updatedAt = now();
+        saveState(state);
+        send({ id: message.id, result: { cleared: true } });
+        send({ method: "thread/goal/cleared", params: { threadId: thread.id } });
+        break;
+      }
+
       case "review/start": {
         const thread = ensureThread(state, message.params.threadId);
         let reviewThread = thread;
@@ -385,9 +446,12 @@ rl.on("line", (line) => {
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
+        const isPersistentCompanionThread =
+          thread.name &&
+          (thread.name.startsWith("Codex Companion Task") || thread.name.startsWith("Codex Companion Goal"));
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
-          : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
+          : taskPayload(prompt, isPersistentCompanionThread && prompt.includes("Continue from the current thread state"));
 
         if (
           BEHAVIOR === "with-subagent" ||

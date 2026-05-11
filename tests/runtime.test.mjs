@@ -34,7 +34,10 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
     cwd: ROOT,
-    env: buildEnv(binDir)
+    env: {
+      ...buildEnv(binDir),
+      CLAUDE_PLUGIN_DATA: makeTempDir()
+    }
   });
 
   assert.equal(result.status, 0);
@@ -191,6 +194,86 @@ test("task runs without auth preflight so Codex can refresh an expired session",
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Handled the requested task/);
+});
+
+test("cli runs a direct Codex task through the companion runtime", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "cli", "check direct CLI access"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Handled the requested task/);
+});
+
+test("goal creates, shows, updates, and clears a persistent Codex goal", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const createResult = run("node", [SCRIPT, "goal", "--fresh", "--budget", "1234", "Ship the integration"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(createResult.status, 0, createResult.stderr);
+  assert.match(createResult.stdout, /# Codex Goal/);
+  assert.match(createResult.stdout, /Objective: Ship the integration/);
+  assert.match(createResult.stdout, /Status: active/);
+  assert.match(createResult.stdout, /Token budget: 1234/);
+  assert.match(createResult.stdout, /Resume in Codex: codex resume thr_/);
+
+  const showResult = run("node", [SCRIPT, "goal", "--show"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(showResult.status, 0, showResult.stderr);
+  assert.match(showResult.stdout, /Objective: Ship the integration/);
+
+  const continueResult = run("node", [SCRIPT, "cli", "--resume"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(continueResult.status, 0, continueResult.stderr);
+  assert.match(continueResult.stdout, /Resumed the prior run/);
+
+  const statusResult = run("node", [SCRIPT, "goal", "--status", "complete"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(statusResult.status, 0, statusResult.stderr);
+  assert.match(statusResult.stdout, /Status: complete/);
+
+  const clearResult = run("node", [SCRIPT, "goal", "--clear"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(clearResult.status, 0, clearResult.stderr);
+  assert.match(clearResult.stdout, /Goal cleared/);
+
+  const showAfterClear = run("node", [SCRIPT, "goal", "--show"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(showAfterClear.status, 0, showAfterClear.stderr);
+  assert.match(showAfterClear.stdout, /No Codex goal is set/);
 });
 
 test("task reports the actual Codex auth error when the run is rejected", () => {

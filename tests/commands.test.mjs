@@ -75,12 +75,43 @@ test("continue is not exposed as a user-facing command", () => {
   assert.deepEqual(commandFiles, [
     "adversarial-review.md",
     "cancel.md",
+    "cli.md",
+    "goal.md",
     "rescue.md",
     "result.md",
     "review.md",
     "setup.md",
     "status.md"
   ]);
+});
+
+test("cli command exposes direct Codex task execution without the rescue subagent", () => {
+  const source = read("commands/cli.md");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+
+  assert.match(source, /disable-model-invocation:\s*true/);
+  assert.match(source, /codex-companion\.mjs" cli "\$ARGUMENTS"/);
+  assert.match(source, /direct Codex CLI task/i);
+  assert.match(source, /--write/);
+  assert.match(source, /--resume/);
+  assert.match(source, /--background/);
+  assert.doesNotMatch(source, /subagent_type/i);
+  assert.match(readme, /### `\/codex:cli`/);
+  assert.match(readme, /direct Codex CLI task/i);
+});
+
+test("goal command exposes Codex thread goal management", () => {
+  const source = read("commands/goal.md");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+
+  assert.match(source, /disable-model-invocation:\s*true/);
+  assert.match(source, /codex-companion\.mjs" goal "\$ARGUMENTS"/);
+  assert.match(source, /--budget <tokens>/);
+  assert.match(source, /--status <active\|paused\|budgetLimited\|complete>/);
+  assert.match(source, /--clear/);
+  assert.match(source, /persistent goal/i);
+  assert.match(readme, /### `\/codex:goal`/);
+  assert.match(readme, /persistent goal Codex can continue over time/i);
 });
 
 test("rescue command absorbs continue semantics", () => {

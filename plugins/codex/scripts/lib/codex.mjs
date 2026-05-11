@@ -35,12 +35,13 @@
  * }} TurnCaptureState
  */
 import { readJsonFile } from "./fs.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient, EXPERIMENTAL_CAPABILITIES } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
+const GOAL_THREAD_PREFIX = "Codex Companion Goal";
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
@@ -60,8 +61,7 @@ function buildThreadParams(cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
-    ephemeral: options.ephemeral ?? true,
-    experimentalRawEvents: false
+    ephemeral: options.ephemeral ?? true
   };
 }
 
@@ -101,6 +101,11 @@ function looksLikeVerificationCommand(command) {
 function buildTaskThreadName(prompt) {
   const excerpt = shorten(prompt, 56);
   return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
+}
+
+function buildGoalThreadName(objective) {
+  const excerpt = shorten(objective, 56);
+  return excerpt ? `${GOAL_THREAD_PREFIX}: ${excerpt}` : GOAL_THREAD_PREFIX;
 }
 
 function extractThreadId(message) {
@@ -604,10 +609,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   }
 }
 
-async function withAppServer(cwd, fn) {
+async function withAppServer(cwd, fn, options = {}) {
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd);
+    client = await CodexAppServerClient.connect(cwd, options);
     const result = await fn(client);
     await client.close();
     return result;
@@ -626,7 +631,7 @@ async function withAppServer(cwd, fn) {
       throw error;
     }
 
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    const directClient = await CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
     try {
       return await fn(directClient);
     } finally {
@@ -843,23 +848,44 @@ export async function getCodexAuthStatus(cwd, options = {}) {
     };
   }
 
-  let client = null;
+  async function readAuthStatus(connectOptions) {
+    let client = null;
+    try {
+      client = await CodexAppServerClient.connect(cwd, connectOptions);
+      return await getCodexAuthStatusFromClient(client, cwd);
+    } finally {
+      if (client) {
+        await client.close().catch(() => {});
+      }
+    }
+  }
+
   try {
-    client = await CodexAppServerClient.connect(cwd, {
+    return await readAuthStatus({
       env: options.env,
       reuseExistingBroker: true
     });
-    return await getCodexAuthStatusFromClient(client, cwd);
   } catch (error) {
+    const shouldRetryDirect = error?.code === "ENOENT" || error?.code === "ECONNREFUSED";
+    if (shouldRetryDirect) {
+      try {
+        return await readAuthStatus({
+          env: options.env,
+          disableBroker: true
+        });
+      } catch (directError) {
+        return buildAuthStatus({
+          loggedIn: false,
+          detail: directError instanceof Error ? directError.message : String(directError),
+          source: "app-server"
+        });
+      }
+    }
     return buildAuthStatus({
       loggedIn: false,
       detail: error instanceof Error ? error.message : String(error),
       source: "app-server"
     });
-  } finally {
-    if (client) {
-      await client.close().catch(() => {});
-    }
   }
 }
 
@@ -1048,6 +1074,87 @@ export async function findLatestTaskThread(cwd) {
       null
     );
   });
+}
+
+export async function startPersistentGoalThread(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+
+  return withAppServer(
+    cwd,
+    async (client) => {
+      const response = await startThread(client, cwd, {
+        model: options.model,
+        sandbox: "read-only",
+        ephemeral: false,
+        threadName: buildGoalThreadName(options.objective ?? "")
+      });
+      return response.thread;
+    },
+    {
+      disableBroker: true,
+      capabilities: EXPERIMENTAL_CAPABILITIES
+    }
+  );
+}
+
+export async function readThreadGoal(cwd, threadId) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+
+  return withAppServer(
+    cwd,
+    async (client) => {
+      const response = await client.request("thread/goal/get", { threadId });
+      return response.goal ?? null;
+    },
+    {
+      disableBroker: true,
+      capabilities: EXPERIMENTAL_CAPABILITIES
+    }
+  );
+}
+
+export async function setThreadGoal(cwd, threadId, params = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+
+  return withAppServer(
+    cwd,
+    async (client) => {
+      const response = await client.request("thread/goal/set", {
+        threadId,
+        ...params
+      });
+      return response.goal;
+    },
+    {
+      disableBroker: true,
+      capabilities: EXPERIMENTAL_CAPABILITIES
+    }
+  );
+}
+
+export async function clearThreadGoal(cwd, threadId) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+
+  return withAppServer(
+    cwd,
+    async (client) => client.request("thread/goal/clear", { threadId }),
+    {
+      disableBroker: true,
+      capabilities: EXPERIMENTAL_CAPABILITIES
+    }
+  );
 }
 
 export function buildPersistentTaskThreadName(prompt) {

@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, EXPERIMENTAL_CAPABILITIES } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
@@ -65,7 +65,10 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
-  const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+  const appClient = await CodexAppServerClient.connect(cwd, {
+    disableBroker: true,
+    capabilities: EXPERIMENTAL_CAPABILITIES
+  });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;

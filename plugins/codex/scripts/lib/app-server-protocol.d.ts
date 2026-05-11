@@ -8,6 +8,7 @@ import type {
 import type {
   ReviewStartParams,
   ReviewStartResponse,
+  ThreadGoal,
   ReviewTarget,
   Thread,
   ThreadItem,
@@ -33,6 +34,7 @@ export type {
   InitializeParams,
   InitializeResponse,
   ReviewTarget,
+  ThreadGoal,
   Thread,
   ThreadItem,
   ThreadListParams,
@@ -41,6 +43,33 @@ export type {
   TurnStartParams,
   UserInput
 };
+
+export interface ThreadGoalGetParams {
+  threadId: string;
+}
+
+export interface ThreadGoalSetParams {
+  threadId: string;
+  objective?: string;
+  status?: "active" | "paused" | "budgetLimited" | "complete";
+  tokenBudget?: number | null;
+}
+
+export interface ThreadGoalClearParams {
+  threadId: string;
+}
+
+export interface ThreadGoalGetResponse {
+  goal: ThreadGoal | null;
+}
+
+export interface ThreadGoalSetResponse {
+  goal: ThreadGoal;
+}
+
+export interface ThreadGoalClearResponse {
+  cleared: boolean;
+}
 
 export type ThreadStartParams = Omit<RawThreadStartParams, "persistExtendedHistory">;
 export type ThreadResumeParams = Omit<RawThreadResumeParams, "persistExtendedHistory">;
@@ -60,6 +89,9 @@ export interface AppServerMethodMap {
   "thread/resume": { params: ThreadResumeParams; result: ThreadResumeResponse };
   "thread/name/set": { params: ThreadSetNameParams; result: ThreadSetNameResponse };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
+  "thread/goal/get": { params: ThreadGoalGetParams; result: ThreadGoalGetResponse };
+  "thread/goal/set": { params: ThreadGoalSetParams; result: ThreadGoalSetResponse };
+  "thread/goal/clear": { params: ThreadGoalClearParams; result: ThreadGoalClearResponse };
   "review/start": { params: ReviewStartParams; result: ReviewStartResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
   "turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResponse };
