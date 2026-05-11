@@ -26,14 +26,14 @@ test("collectReviewContext sanitizes Changed Files in working-tree mode", (t) =>
   }
 
   // Given: working tree with evil‮reversed.ts
-  // When:  sanitize path flows through collectReviewContext(..., { includeDiff: false })
-  // Then:  raw bidi char is absent and escaped filename is present
+  // When:  collectReviewContext(..., { includeDiff: false }) renders Git-quoted filenames
+  // Then:  raw bidi char is absent and the default C-quoted path bytes are present
   const target = resolveReviewTarget(cwd, {});
   const context = collectReviewContext(cwd, target, { includeDiff: false });
 
   assert.equal(target.mode, "working-tree");
   assert.equal(context.content.includes("‮"), false);
-  assert.equal(context.content.includes("evil\\u202ereversed.ts"), true);
+  assert.equal(context.content.includes("evil\\\\342\\\\200\\\\256reversed.ts"), true);
 });
 
 test("collectReviewContext sanitizes Changed Files in branch mode", (t) => {
@@ -67,4 +67,37 @@ test("collectReviewContext sanitizes Changed Files in branch mode", (t) => {
   assert.equal(target.mode, "branch");
   assert.equal(context.content.includes("‮"), false);
   assert.equal(context.content.includes("evil\\u202ereversed.ts"), true);
+});
+
+test("collectReviewContext keeps Git default quoting for inline-diff path", (t) => {
+  if (process.platform === "win32") {
+    t.skip("bidirectional override filenames are not portable on Windows");
+    return;
+  }
+
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  run("git", ["add", "app.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  run("git", ["checkout", "-b", "feature/test"], { cwd });
+
+  try {
+    fs.writeFileSync(path.join(cwd, "evil\u202ereversed.ts"), "malicious");
+  } catch (error) {
+    t.skip(`failed to create bidi filename: ${error.message}`);
+    return;
+  }
+  run("git", ["add", "evil\u202ereversed.ts"], { cwd });
+  run("git", ["commit", "-m", "add malicious filename"], { cwd });
+
+  // Given: branch diff with evil<U+202E>reversed.ts
+  // When:  collectReviewContext(..., { includeDiff: true })
+  // Then:  inline-diff content (Branch Diff / Diff Stat) keeps Git's default C-quote
+  //        (`\342\200\256` or `\u202e` octal/utf escape) and never contains raw U+202E
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const context = collectReviewContext(cwd, target, { includeDiff: true });
+
+  assert.equal(target.mode, "branch");
+  assert.equal(context.content.includes("‮"), false);
 });

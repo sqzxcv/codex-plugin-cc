@@ -68,3 +68,59 @@ test("sanitizeFilenamesForPrompt returns an empty string for non-array inputs", 
   assert.equal(sanitizeFilenamesForPrompt("not-array"), "");
   assert.equal(sanitizeFilenamesForPrompt(undefined), "");
 });
+
+test("sanitizeFilenamesForPrompt escapes BMP invisible format characters", () => {
+  // Given: filename containing U+00AD SOFT HYPHEN + U+061C ARABIC LETTER MARK + U+2060 WORD JOINER + U+FE0F variation selector
+  // When:  sanitizeFilenamesForPrompt(input)
+  // Then:  each invisible char becomes a \uXXXX escape and raw chars are absent from the output
+  const input = [
+    "a\u00adb\u061cc\u2060d\ufe0fe.ts"
+  ];
+
+  const out = sanitizeFilenamesForPrompt(input);
+
+  assert.equal(out.includes("\u00ad"), false);
+  assert.equal(out.includes("\u061c"), false);
+  assert.equal(out.includes("\u2060"), false);
+  assert.equal(out.includes("\ufe0f"), false);
+  assert.equal(out.includes("\\u00ad"), true);
+  assert.equal(out.includes("\\u061c"), true);
+  assert.equal(out.includes("\\u2060"), true);
+  assert.equal(out.includes("\\ufe0f"), true);
+});
+
+test("sanitizeFilenamesForPrompt escapes supplementary plane tag characters", () => {
+  // Given: filename with U+E0001 LANGUAGE TAG (supplementary plane, requires code point iteration)
+  // When:  sanitizeFilenamesForPrompt(input)
+  // Then:  raw U+E0001 is absent and \u{e0001} extended escape literal is present
+  const input = [String.fromCodePoint(0xe0001) + "hidden.ts"];
+
+  const out = sanitizeFilenamesForPrompt(input);
+
+  assert.equal(out.includes(String.fromCodePoint(0xe0001)), false);
+  assert.equal(out.includes("\\u{e0001}"), true);
+});
+
+test("sanitizeFilenamesForPrompt escapes supplementary plane variation selectors", () => {
+  // Given: filename with U+E0100 VARIATION SELECTOR-17
+  // When:  sanitizeFilenamesForPrompt(input)
+  // Then:  raw U+E0100 is absent and \u{e0100} extended escape literal is present
+  const input = ["glyph" + String.fromCodePoint(0xe0100) + ".ts"];
+
+  const out = sanitizeFilenamesForPrompt(input);
+
+  assert.equal(out.includes(String.fromCodePoint(0xe0100)), false);
+  assert.equal(out.includes("\\u{e0100}"), true);
+});
+
+test("sanitizeFilenamesForPrompt escapes lone surrogate halves", () => {
+  // Given: filename with a lone high surrogate (U+D800) that would normally split a pair
+  // When:  sanitizeFilenamesForPrompt(input)
+  // Then:  raw surrogate code unit is absent and \ud800 escape literal is present
+  const input = ["x\ud800y.ts"];
+
+  const out = sanitizeFilenamesForPrompt(input);
+
+  assert.equal(out.includes("\ud800"), false);
+  assert.equal(out.includes("\\ud800"), true);
+});

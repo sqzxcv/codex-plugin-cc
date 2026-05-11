@@ -13,11 +13,11 @@ const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 
 function git(cwd, args, options = {}) {
-  return runCommand("git", ["-c", "core.quotePath=false", ...args], { cwd, ...options });
+  return runCommand("git", args, { cwd, ...options });
 }
 
 function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", ["-c", "core.quotePath=false", ...args], { cwd, ...options });
+  return runCommandChecked("git", args, { cwd, ...options });
 }
 
 function listUniqueFiles(...groups) {
@@ -269,7 +269,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
   const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
   const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const changedFiles = gitChecked(cwd, ["diff", "-z", "--name-only", comparison.commitRange]).stdout.split("\0").filter(Boolean);
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
   const diffStat = escapeRenderUnsafeChars(
     gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim()
