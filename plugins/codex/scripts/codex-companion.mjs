@@ -719,12 +719,22 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "cwd", "max-investigation-turns"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
     }
   });
+
+  const rawMaxTurns = options["max-investigation-turns"];
+  let maxInvestigationTurns;
+  if (rawMaxTurns !== undefined) {
+    const parsedTurns = Number.parseInt(rawMaxTurns, 10);
+    if (!Number.isFinite(parsedTurns) || parsedTurns <= 0) {
+      throw new Error(`--max-investigation-turns must be a positive integer (got: ${rawMaxTurns})`);
+    }
+    maxInvestigationTurns = parsedTurns;
+  }
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -754,6 +764,7 @@ async function handleReviewCommand(argv, config) {
         model: options.model,
         focusText,
         reviewName: config.reviewName,
+        maxInvestigationTurns,
         onProgress: progress
       }),
     { json: options.json }

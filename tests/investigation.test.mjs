@@ -589,3 +589,65 @@ test("renderer shows truncation banner on parse-error and validation-error paths
   assert.match(validationErrorOut, /Investigation truncated at 10 turns/,
     "banner must appear when output has wrong shape AND investigation was truncated");
 });
+
+// -------------------------------------------------------------------
+// Task 6: --max-investigation-turns CLI flag
+// -------------------------------------------------------------------
+
+import { parseArgs } from "../plugins/codex/scripts/lib/args.mjs";
+
+test("parseArgs accepts --max-investigation-turns as a value option", () => {
+  const { options } = parseArgs(
+    ["--base", "main", "--max-investigation-turns", "15", "auth"],
+    {
+      valueOptions: ["base", "scope", "model", "cwd", "max-investigation-turns"],
+      booleanOptions: ["json", "background", "wait"]
+    }
+  );
+  assert.equal(options["max-investigation-turns"], "15");
+});
+
+test("--max-investigation-turns propagates from CLI to runAppServerInvestigation", async () => {
+  const cwd = makeSelfCollectGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    for (let i = 0; i < 6; i += 1) {
+      fake.queueTurnResponse({
+        commands: [{ command: "git diff", exitCode: 0 }],
+        finalAnswer: null
+      });
+    }
+    fake.queueTurnResponse({
+      finalAnswer: { text: JSON.stringify({ verdict: "approve", summary: "ok", findings: [], next_steps: [] }) }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review",
+       "--base", "main", "--scope", "branch", "--cwd", cwd,
+       "--max-investigation-turns", "5",
+       "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.investigation.turnCount, 5);
+    assert.equal(payload.investigation.truncated, true);
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("invalid --max-investigation-turns raises a clear error", () => {
+  const r = spawnSync("node",
+    [COMPANION_PATH, "adversarial-review", "--max-investigation-turns", "abc"],
+    { encoding: "utf8", timeout: 30000 }
+  );
+  assert.notEqual(r.status, 0, "should exit non-zero on invalid flag value");
+  assert.match(
+    r.stderr,
+    /must be a positive integer/,
+    "error message should explain the validation failure"
+  );
+});
