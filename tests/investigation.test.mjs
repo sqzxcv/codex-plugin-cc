@@ -217,10 +217,46 @@ test("phase-1 hard error (transport throw) aborts before phase-2 finalize", asyn
     assert.ok(result.error, "result should have an error");
     assert.match(result.error.message, /ECONNRESET/);
     assert.equal(result.investigation.turnCount, 1, "hard error returns BEFORE incrementing turnCount");
+    assert.equal(result.status, 1, "transport-error path returns numeric status");
 
     const requests = fake.requests;
     const starts = requests.filter((r) => r.method === "turn/start");
     assert.equal(starts.length, 2, "the failing turn was still attempted");
+  } finally {
+    fake.close();
+  }
+});
+
+test("phase-2 finalize transport error preserves investigation metadata", async () => {
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Recon turn 1: commands
+    fake.queueTurnResponse({
+      commands: [{ command: "git diff", exitCode: 0 }]
+    });
+    // Recon turn 2: converge with final answer + no commands
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    // Finalize turn: RPC error
+    fake.queueTurnRpcError({ message: "ETIMEDOUT during finalize" });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize."
+    });
+
+    assert.ok(result.error, "result should carry the finalize error");
+    assert.match(result.error.message, /ETIMEDOUT during finalize/);
+    assert.equal(result.investigation.turnCount, 2, "investigation completed both recon turns before finalize failed");
+    assert.equal(result.investigation.truncated, false, "investigation converged; not truncated");
+    assert.equal(result.status, 1, "finalize-error path returns numeric status");
+
+    const requests = fake.requests;
+    const starts = requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 3, "2 recon + 1 finalize attempted");
   } finally {
     fake.close();
   }
