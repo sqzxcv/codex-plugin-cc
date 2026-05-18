@@ -110,13 +110,14 @@ test("respects maxInvestigationTurns and marks truncated", async () => {
   const cwd = makeTempDir("codex-inv-test-");
   const fake = setupFakeCodex({ cwd });
   try {
-    // Queue 4 recon turns: all have commands, no final answer
-    for (let i = 0; i < 4; i++) {
+    // Queue 3 recon turns: all have commands, no final answer.
+    // (With maxInvestigationTurns=3 the loop will exhaust here.)
+    for (let i = 0; i < 3; i++) {
       fake.queueTurnResponse({
         commands: [{ command: `check-${i}`, exitCode: 0 }]
       });
     }
-    // Finalize turn
+    // Finalize turn: pure JSON, zero commands.
     fake.queueTurnResponse({
       finalAnswer: { text: APPROVE_REVIEW }
     });
@@ -263,6 +264,97 @@ test("phase-1 hard error (transport throw) aborts before phase-2 finalize", asyn
     const requests = fake.requests;
     const starts = requests.filter((r) => r.method === "turn/start");
     assert.equal(starts.length, 2, "the failing turn was still attempted");
+  } finally {
+    fake.close();
+  }
+});
+
+test("finalize turn that runs commands triggers one strict-prompt retry", async () => {
+  // Production observation: the model occasionally emits a tool-call stub
+  // during finalize (e.g. {"cmd": "wc -l ..."}) instead of the structured
+  // JSON. When that happens the finalize turn has commandExecutions.length > 0.
+  // The orchestrator should detect this contract violation and retry once
+  // with a stricter prompt.
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Recon: converge.
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    // First finalize attempt: model misbehaves and runs a command.
+    fake.queueTurnResponse({
+      commands: [{ command: "wc -l README.md", exitCode: 0 }],
+      finalAnswer: { text: "{\"cmd\":\"wc -l README.md\"}" }
+    });
+    // Second finalize attempt: model behaves and emits proper JSON.
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: APPROVE_REVIEW }
+    });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      outputSchema: { type: "object", required: ["verdict"] }
+    });
+
+    assert.equal(result.finalMessage, APPROVE_REVIEW,
+      "the second (well-behaved) finalize attempt should be the final message");
+    const requests = fake.requests;
+    const starts = requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 3, "1 recon + 2 finalize attempts");
+
+    // The retry must use a stricter prompt distinct from the first try.
+    const finalizeStarts = starts.slice(1); // first start is recon
+    assert.match(
+      finalizeStarts[1].params.input?.[0]?.text ?? "",
+      /STRICT FINALIZE/,
+      "retry prompt must include the stricter directive"
+    );
+    assert.doesNotMatch(
+      finalizeStarts[0].params.input?.[0]?.text ?? "",
+      /STRICT FINALIZE/,
+      "first finalize attempt uses the normal prompt"
+    );
+  } finally {
+    fake.close();
+  }
+});
+
+test("finalize retry gives up after the second attempt and surfaces the output", async () => {
+  // If the model misbehaves twice in a row, the orchestrator must not loop
+  // forever — it should accept the second attempt's output and let the
+  // upstream parser produce a useful validation error.
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    // Both finalize attempts misbehave.
+    fake.queueTurnResponse({
+      commands: [{ command: "wc -l a", exitCode: 0 }],
+      finalAnswer: { text: "{\"cmd\":\"wc -l a\"}" }
+    });
+    fake.queueTurnResponse({
+      commands: [{ command: "wc -l b", exitCode: 0 }],
+      finalAnswer: { text: "{\"cmd\":\"wc -l b\"}" }
+    });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      outputSchema: { type: "object", required: ["verdict"] }
+    });
+
+    const requests = fake.requests;
+    const starts = requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 3, "1 recon + 2 finalize attempts only — no infinite loop");
+    assert.equal(result.finalMessage, "{\"cmd\":\"wc -l b\"}",
+      "the second-attempt output is surfaced so the parser can flag it");
   } finally {
     fake.close();
   }

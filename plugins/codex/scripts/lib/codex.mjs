@@ -1154,36 +1154,72 @@ export async function runAppServerInvestigation(cwd, options = {}) {
 
     emitProgress(options.onProgress, "Investigation complete; finalizing structured output.", "finalizing");
 
+    // The finalize turn is supposed to emit only the structured JSON. In
+    // practice the model sometimes emits a tool-call stub instead (e.g.
+    // {"cmd": "wc -l ..."}) — if any commands ran during finalize, treat
+    // that as a contract violation and retry once with a sharper prompt.
+    const STRICT_FINALIZE_REMINDER =
+      "STRICT FINALIZE: do not run any shell commands. Output ONLY the JSON " +
+      "matching the schema, with no prose, no tool calls, and nothing else.\n\n";
     let finalizeState;
-    try {
-      finalizeState = await captureTurn(
-        client,
-        threadId,
-        () =>
-          client.request("turn/start", {
-            threadId,
-            input: buildTurnInput(finalizePrompt),
-            model: options.model ?? null,
-            effort: options.effort ?? null,
-            outputSchema: options.outputSchema ?? null
-          }),
-        { onProgress: options.onProgress }
-      );
-    } catch (transportError) {
-      return {
-        status: 1,
-        threadId,
-        turnId: null,
-        finalMessage: "",
-        reasoningSummary: [],
-        turn: null,
-        error: { message: transportError?.message ?? String(transportError) },
-        stderr: cleanCodexStderr(client.stderr),
-        fileChanges: aggregatedFileChanges,
-        touchedFiles: collectTouchedFiles(aggregatedFileChanges),
-        commandExecutions: aggregatedCommandExecutions,
-        investigation: { turnCount, truncated }
-      };
+    let finalizeAttempts = 0;
+    const MAX_FINALIZE_ATTEMPTS = 2;
+    while (finalizeAttempts < MAX_FINALIZE_ATTEMPTS) {
+      finalizeAttempts += 1;
+      const promptText = finalizeAttempts === 1
+        ? finalizePrompt
+        : STRICT_FINALIZE_REMINDER + finalizePrompt;
+      try {
+        finalizeState = await captureTurn(
+          client,
+          threadId,
+          () =>
+            client.request("turn/start", {
+              threadId,
+              input: buildTurnInput(promptText),
+              model: options.model ?? null,
+              effort: options.effort ?? null,
+              outputSchema: options.outputSchema ?? null
+            }),
+          { onProgress: options.onProgress }
+        );
+      } catch (transportError) {
+        return {
+          status: 1,
+          threadId,
+          turnId: null,
+          finalMessage: "",
+          reasoningSummary: [],
+          turn: null,
+          error: { message: transportError?.message ?? String(transportError) },
+          stderr: cleanCodexStderr(client.stderr),
+          fileChanges: aggregatedFileChanges,
+          touchedFiles: collectTouchedFiles(aggregatedFileChanges),
+          commandExecutions: aggregatedCommandExecutions,
+          investigation: { turnCount, truncated }
+        };
+      }
+
+      // If the finalize turn ran commands, the model violated the contract.
+      // Retry once with a stricter prompt; if it still fails, accept the
+      // (likely-malformed) output and let the parser surface the error.
+      if (finalizeState.commandExecutions.length === 0) {
+        break;
+      }
+      if (finalizeAttempts < MAX_FINALIZE_ATTEMPTS) {
+        emitProgress(
+          options.onProgress,
+          "Finalize turn ran commands; retrying with stricter prompt.",
+          "finalizing"
+        );
+      }
+      // Aggregate the wasted commands so the caller still sees what happened.
+      for (const cmd of finalizeState.commandExecutions) {
+        aggregatedCommandExecutions.push(cmd);
+      }
+      for (const change of finalizeState.fileChanges) {
+        aggregatedFileChanges.push(change);
+      }
     }
 
     for (const cmd of finalizeState.commandExecutions) {

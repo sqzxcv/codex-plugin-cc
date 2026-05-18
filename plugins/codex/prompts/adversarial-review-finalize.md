@@ -19,7 +19,8 @@ A finding should answer:
 </finding_bar>
 
 <structured_output_contract>
-Return only valid JSON matching the provided schema.
+This is the finalization turn. Do NOT run any shell commands or tool calls in this turn — your investigation is already complete and you have all the context you need from the prior turns of this thread.
+Return only valid JSON matching the provided schema. Your entire output must be that JSON — no prose before or after, no shell commands, no tool-call payloads.
 Keep the output compact and specific.
 Use `needs-attention` if there is any material risk worth blocking on.
 Use `approve` only if you cannot support any substantive adversarial finding from your investigation.
