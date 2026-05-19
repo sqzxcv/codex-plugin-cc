@@ -26,7 +26,56 @@ function defaultState() {
   };
 }
 
+// Optional process-wide override for the state directory. Backed by the
+// `CODEX_COMPANION_STATE_DIR` environment variable so it propagates to child
+// processes (background task workers and session lifecycle hooks read the
+// same value). When set, `resolveStateDir()` returns the override verbatim,
+// bypassing the workspace-root hashing.
+//
+// The value MUST be (or be canonicalizable to) an absolute path. Relative
+// values are resolved against the importing process's cwd on first read and
+// the canonical absolute path is written back to `process.env` so child
+// processes inherit a stable value. This prevents the same env var from
+// resolving to different absolute paths in parent vs child processes.
+//
+// Set programmatically via `setStateDirOverride(dir)` or directly by exporting
+// `CODEX_COMPANION_STATE_DIR=/absolute/path` in the calling shell before
+// invoking Claude Code (necessary if you want session lifecycle hooks to
+// honor the override too). The `--state-dir <abs-path>` CLI flag on
+// `codex-companion.mjs main()` calls `setStateDirOverride()` for you.
+const STATE_DIR_OVERRIDE_ENV = "CODEX_COMPANION_STATE_DIR";
+
+export function setStateDirOverride(dir) {
+  if (dir == null || dir === "") {
+    delete process.env[STATE_DIR_OVERRIDE_ENV];
+    return;
+  }
+  // path.resolve() canonicalizes relative paths against process.cwd().
+  process.env[STATE_DIR_OVERRIDE_ENV] = path.resolve(dir);
+}
+
+export function getStateDirOverride() {
+  const raw = process.env[STATE_DIR_OVERRIDE_ENV];
+  if (!raw) {
+    return null;
+  }
+  if (path.isAbsolute(raw)) {
+    return raw;
+  }
+  // Canonicalize-once-and-persist: resolve against current cwd and write back
+  // to process.env so child processes inherit the canonical value. This
+  // prevents drift between parent/child processes whose cwds may differ.
+  const resolved = path.resolve(raw);
+  process.env[STATE_DIR_OVERRIDE_ENV] = resolved;
+  return resolved;
+}
+
 export function resolveStateDir(cwd) {
+  const override = getStateDirOverride();
+  if (override) {
+    return override;
+  }
+
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
   try {

@@ -29,6 +29,7 @@ import {
   getConfig,
   listJobs,
   setConfig,
+  setStateDirOverride,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
@@ -74,13 +75,33 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] status [job-id] [--all] [--json]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] result [job-id] [--json]",
+      "  node scripts/codex-companion.mjs [--state-dir <abs-path>] cancel [job-id] [--json]",
+      "",
+      "Global flag:",
+      "  --state-dir <abs-path>   Override the per-workspace state directory",
+      "                           (state.json, jobs/, broker.json). The value MUST",
+      "                           be an absolute path; relative paths, whitespace-",
+      "                           containing values, and option-looking tokens are",
+      "                           left as positionals. Accepted anywhere in argv",
+      "                           when shell-tokenized into separate elements.",
+      "                           Equivalent to exporting",
+      "                           CODEX_COMPANION_STATE_DIR=<abs-path>. Child",
+      "                           processes (background workers, lifecycle hooks)",
+      "                           inherit the override via the env var.",
+      "",
+      "                           Note: the plugin's /codex:review,",
+      "                           /codex:adversarial-review, and /codex:task slash",
+      "                           commands pass user arguments as a QUOTED single",
+      "                           string, so the CLI flag form is NOT extracted",
+      "                           from those invocations. For those, set the",
+      "                           env var instead (before launching Claude Code,",
+      "                           so lifecycle hooks inherit it too)."
     ].join("\n")
   );
 }
@@ -978,8 +999,75 @@ async function handleCancel(argv) {
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);
 }
 
+// Scan `tokens` for `--state-dir <abs-path>` and `--state-dir=<abs-path>`
+// pairs; when value passes `path.isAbsolute()` AND is whitespace-free, set
+// the override (via env var, see lib/state.mjs) and strip the pair from the
+// returned tokens. Non-absolute / option-looking / whitespace-containing
+// values are left as positionals. Stops at `--` (passthrough). Pure
+// function except for the setStateDirOverride side effect.
+function extractStateDirFlag(tokens) {
+  const filtered = [];
+  let afterPassthrough = false;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const tok = tokens[i];
+    if (afterPassthrough) {
+      filtered.push(tok);
+      continue;
+    }
+    if (tok === "--") {
+      afterPassthrough = true;
+      filtered.push(tok);
+      continue;
+    }
+    if (tok === "--state-dir") {
+      const value = tokens[i + 1];
+      // Separate-token form: next argv element is the value. Already split
+      // by the shell, so whitespace cannot appear in a single token unless
+      // the user explicitly quoted it on the command line (rare; treated
+      // as a positional via the !/\s/ check).
+      if (value && path.isAbsolute(value) && !/\s/.test(value)) {
+        setStateDirOverride(value);
+        i += 1;
+        continue;
+      }
+      filtered.push(tok);
+      continue;
+    }
+    if (tok.startsWith("--state-dir=")) {
+      const value = tok.slice("--state-dir=".length);
+      // Inline-equals form: value is in the same argv element. Reject
+      // whitespace-containing values defensively — `path.isAbsolute()`
+      // returns true for paths like `/tmp/foo extra-text`, but consuming
+      // such a token would silently truncate the user's actual prompt.
+      if (value && path.isAbsolute(value) && !/\s/.test(value)) {
+        setStateDirOverride(value);
+        continue;
+      }
+      filtered.push(tok);
+      continue;
+    }
+    filtered.push(tok);
+  }
+  return filtered;
+}
+
 async function main() {
-  const [subcommand, ...argv] = process.argv.slice(2);
+  // Extract the `--state-dir <abs-path>` global flag from anywhere in argv
+  // (before OR after the subcommand). Only ABSOLUTE-PATH, whitespace-free
+  // values are extracted; everything else is left as a positional for the
+  // subcommand handler.
+  //
+  // This works for direct CLI invocation and for the plugin's UNQUOTED
+  // `$ARGUMENTS` slash commands (setup, status, result, cancel) where bash
+  // word-splits user args into separate argv elements.
+  //
+  // The QUOTED `$ARGUMENTS` slash commands (review, adversarial-review,
+  // task) place all user args as a SINGLE argv element after the subcommand;
+  // the flag is NOT extracted in that case. For those, use the env-var form
+  // instead: `export CODEX_COMPANION_STATE_DIR=<abs-path>` before invoking
+  // Claude Code.
+  const filteredArgv = extractStateDirFlag(process.argv.slice(2));
+  const [subcommand, ...argv] = filteredArgv;
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
     printUsage();
     return;
