@@ -481,6 +481,126 @@ function recordItem(state, item, lifecycle, threadId = null) {
   }
 }
 
+/**
+ * Map an app-server notification to a flat, append-friendly event record for
+ * the per-job NDJSON event stream (see state.mjs:appendJobEvent). The Claude
+ * main loop polls `/codex:events <job-id>` and reasons over these records —
+ * so the shape must stay stable and self-describing. `seq` is injected by
+ * the appender; this function is pure and does not allocate sequence numbers.
+ */
+export function normalizeNotification(state, message) {
+  const ts = new Date().toISOString();
+  const method = message.method ?? null;
+  const params = message.params ?? {};
+
+  switch (method) {
+    case "thread/started":
+      return {
+        ts,
+        method,
+        threadId: params.thread?.id ?? null,
+        turnId: null,
+        itemType: null,
+        lifecycle: null,
+        phase: "starting",
+        message: `Thread started (${params.thread?.id ?? "?"}).`,
+        raw: params
+      };
+    case "thread/name/updated":
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: null,
+        itemType: null,
+        lifecycle: null,
+        phase: "starting",
+        message: `Thread renamed: ${params.threadName ?? "?"}`,
+        raw: params
+      };
+    case "turn/started":
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: params.turn?.id ?? null,
+        itemType: null,
+        lifecycle: null,
+        phase: "thinking",
+        message: `Turn started (${params.turn?.id ?? "?"}).`,
+        raw: params
+      };
+    case "item/started": {
+      const item = params.item ?? {};
+      const description = describeStartedItem(state, item);
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: state.threadTurnIds.get(params.threadId ?? state.threadId) ?? null,
+        itemType: item.type ?? null,
+        lifecycle: "started",
+        phase: description?.phase ?? "running",
+        message: description?.message ?? `Item started: ${item.type ?? "?"}`,
+        raw: item
+      };
+    }
+    case "item/completed": {
+      const item = params.item ?? {};
+      const description = describeCompletedItem(state, item);
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: state.threadTurnIds.get(params.threadId ?? state.threadId) ?? null,
+        itemType: item.type ?? null,
+        lifecycle: "completed",
+        phase: description?.phase ?? "running",
+        message: description?.message ?? `Item completed: ${item.type ?? "?"}`,
+        raw: item
+      };
+    }
+    case "error":
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: null,
+        itemType: null,
+        lifecycle: null,
+        phase: "failed",
+        message: `Codex error: ${params.error?.message ?? "unknown"}`,
+        raw: params.error ?? null
+      };
+    case "turn/completed": {
+      const turnStatus = params.turn?.status ?? "completed";
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? null,
+        turnId: params.turn?.id ?? null,
+        itemType: null,
+        lifecycle: null,
+        phase: turnStatus === "completed" ? "completed" : "finalizing",
+        message: `Turn ${turnStatus}.`,
+        raw: params.turn ?? null
+      };
+    }
+    default:
+      return {
+        ts,
+        method,
+        threadId: params.threadId ?? params.thread?.id ?? null,
+        turnId: params.turn?.id ?? null,
+        itemType: null,
+        lifecycle: null,
+        phase: "unknown",
+        message: `${method ?? "unknown"} notification`,
+        raw: params
+      };
+  }
+}
+
 function applyTurnNotification(state, message) {
   switch (message.method) {
     case "thread/started":
@@ -553,6 +673,22 @@ function applyTurnNotification(state, message) {
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
+  const { onNotification } = options;
+
+  // Apply notification to state THEN emit normalized event. Order matters:
+  // normalize reads state.threadTurnIds / threadLabels that applyTurnNotification
+  // populates. onNotification errors are swallowed so a broken consumer can't
+  // crash the worker (events are observability, not control flow).
+  const dispatch = (message) => {
+    applyTurnNotification(state, message);
+    if (onNotification) {
+      try {
+        onNotification(normalizeNotification(state, message));
+      } catch {
+        // intentionally ignored
+      }
+    }
+  };
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -561,7 +697,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
-      applyTurnNotification(state, message);
+      dispatch(message);
       return;
     }
 
@@ -572,7 +708,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         return;
     }
 
-    applyTurnNotification(state, message);
+    dispatch(message);
   });
 
   try {
@@ -584,7 +720,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
     for (const message of state.bufferedNotifications) {
       if (belongsToTurn(state, message)) {
-        applyTurnNotification(state, message);
+        dispatch(message);
       } else {
         if (previousHandler) {
           previousHandler(message);
@@ -1009,7 +1145,10 @@ export async function runAppServerTurn(cwd, options = {}) {
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null
         }),
-      { onProgress: options.onProgress }
+      {
+        onProgress: options.onProgress,
+        onNotification: options.onNotification
+      }
     );
 
     return {
@@ -1019,6 +1158,10 @@ export async function runAppServerTurn(cwd, options = {}) {
       finalMessage: turnState.lastAgentMessage,
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
+      // Top-level surface so /codex:status and the events stream can read
+      // usage without traversing the nested `turn` object. May be null when
+      // the upstream codex CLI version does not report usage.
+      usage: turnState.finalTurn?.usage ?? null,
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,
