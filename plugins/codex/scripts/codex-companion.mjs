@@ -25,9 +25,12 @@ import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
+  appendJobEvent,
   generateJobId,
   getConfig,
   listJobs,
+  readJobEvents,
+  resolveJobEventsFile,
   setConfig,
   upsertJob,
   writeJobFile
@@ -78,6 +81,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs events <job-id> [--since <iso>] [--after-seq <n>] [--limit <n>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -487,6 +491,7 @@ async function executeTaskRun(request) {
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
+    onNotification: request.onNotification,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   });
@@ -803,14 +808,15 @@ async function handleTaskWorker(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
+  const jobId = options["job-id"];
+  const storedJob = readStoredJob(workspaceRoot, jobId);
   if (!storedJob) {
-    throw new Error(`No stored job found for ${options["job-id"]}.`);
+    throw new Error(`No stored job found for ${jobId}.`);
   }
 
   const request = storedJob.request;
   if (!request || typeof request !== "object") {
-    throw new Error(`Stored job ${options["job-id"]} is missing its task request payload.`);
+    throw new Error(`Stored job ${jobId} is missing its task request payload.`);
   }
 
   const { logFile, progress } = createTrackedProgress(
@@ -822,19 +828,158 @@ async function handleTaskWorker(argv) {
       logFile: storedJob.logFile ?? null
     }
   );
-  await runTrackedJob(
-    {
-      ...storedJob,
-      workspaceRoot,
-      logFile
-    },
-    () =>
-      executeTaskRun({
-        ...request,
-        onProgress: progress
-      }),
-    { logFile }
-  );
+
+  // Per-job event stream wiring. Both `onNotification` and the stall watchdog
+  // share `seq` and `lastEventAt` via this closure — they run in the same
+  // task-worker process, so no cross-process synchronization is needed.
+  let seq = 0;
+  let lastEventAt = Date.now();
+  let lastEmittedPhase = null;
+
+  const stallSecondsRaw = Number(process.env.CODEX_COMPANION_STALL_SECONDS);
+  const stallSeconds = Number.isFinite(stallSecondsRaw) && stallSecondsRaw > 0 ? stallSecondsRaw : 60;
+
+  const onNotification = (event) => {
+    try {
+      appendJobEvent(workspaceRoot, jobId, { seq: seq++, ...event });
+      lastEventAt = Date.now();
+      // Reflect phase transitions into the central job summary so /codex:status
+      // shows the same vocabulary the events stream uses. Only on real phase
+      // change to keep state.json writes rare (no lock; single-flight worker).
+      if (event.phase && event.phase !== lastEmittedPhase) {
+        lastEmittedPhase = event.phase;
+        upsertJob(workspaceRoot, { id: jobId, phase: event.phase, lastEventAt: event.ts });
+      }
+    } catch {
+      // Observability is fire-and-forget; never crash the worker.
+    }
+  };
+
+  // Watchdog: if no meaningful event arrives for `stallSeconds`, emit a
+  // single `{type:"watchdog", phase:"stuck"}` record. We deliberately do
+  // not cancel — main-loop Claude decides what to do (continue / compact /
+  // cancel). Refresh `lastEventAt` after emit so we don't spam.
+  const watchdog = setInterval(() => {
+    const elapsedMs = Date.now() - lastEventAt;
+    if (elapsedMs <= stallSeconds * 1000) return;
+    try {
+      appendJobEvent(workspaceRoot, jobId, {
+        seq: seq++,
+        ts: new Date().toISOString(),
+        type: "watchdog",
+        phase: "stuck",
+        stallMs: elapsedMs,
+        since: new Date(lastEventAt).toISOString()
+      });
+      upsertJob(workspaceRoot, { id: jobId, phase: "stuck", lastEventAt: new Date().toISOString() });
+      lastEventAt = Date.now();
+      lastEmittedPhase = "stuck";
+    } catch {
+      // ignore
+    }
+  }, 5000);
+  watchdog.unref?.();
+
+  let completed = false;
+  let workerError = null;
+  try {
+    await runTrackedJob(
+      {
+        ...storedJob,
+        workspaceRoot,
+        logFile
+      },
+      () =>
+        executeTaskRun({
+          ...request,
+          onProgress: progress,
+          onNotification
+        }),
+      { logFile }
+    );
+    completed = true;
+  } catch (error) {
+    workerError = error;
+  } finally {
+    clearInterval(watchdog);
+    // Terminal event so a polling reader can distinguish "still slow" from
+    // "already finished". This is the single source of truth for end-of-job —
+    // main-loop Claude must check for {type:"job/exited"} not just job.status.
+    try {
+      appendJobEvent(workspaceRoot, jobId, {
+        seq: seq++,
+        ts: new Date().toISOString(),
+        type: "job/exited",
+        phase: completed ? "completed" : "failed",
+        exitCode: completed ? 0 : 1,
+        errorMessage: workerError
+          ? workerError instanceof Error
+            ? workerError.message
+            : String(workerError)
+          : null
+      });
+    } catch {
+      // ignore
+    }
+  }
+  if (workerError) throw workerError;
+}
+
+async function handleEvents(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "since", "after-seq", "limit"],
+    booleanOptions: ["json"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const jobId = positionals[0];
+  if (!jobId) {
+    throw new Error("Usage: events <job-id> [--since <iso>] [--after-seq <n>] [--limit <n>] [--json]");
+  }
+
+  const readOptions = {};
+  if (options["after-seq"] != null) {
+    const parsed = Number(options["after-seq"]);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`Invalid --after-seq value: ${options["after-seq"]}`);
+    }
+    readOptions.afterSeq = parsed;
+  }
+  if (options.since) {
+    readOptions.since = String(options.since);
+  }
+  if (options.limit != null) {
+    const parsed = Number(options.limit);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`Invalid --limit value: ${options.limit}`);
+    }
+    readOptions.limit = parsed;
+  }
+
+  const events = readJobEvents(workspaceRoot, jobId, readOptions);
+  const payload = {
+    jobId,
+    eventsFile: resolveJobEventsFile(workspaceRoot, jobId),
+    count: events.length,
+    events
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  if (events.length === 0) {
+    process.stdout.write(`No events yet for ${jobId}.\n`);
+    return;
+  }
+  for (const event of events) {
+    const phase = event.phase ?? "?";
+    const method = event.method ?? event.type ?? "?";
+    const message = event.message ?? "";
+    process.stdout.write(`[${event.ts}] seq=${event.seq} ${method} ${phase} ${message}\n`);
+  }
 }
 
 async function handleStatus(argv) {
@@ -1002,6 +1147,9 @@ async function main() {
       break;
     case "task-worker":
       await handleTaskWorker(argv);
+      break;
+    case "events":
+      await handleEvents(argv);
       break;
     case "status":
       await handleStatus(argv);
