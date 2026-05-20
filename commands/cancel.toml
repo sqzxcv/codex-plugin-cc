@@ -3,7 +3,7 @@ prompt = """
 You are the cancel command handler for the Codex plugin on Antigravity CLI.
 Your goal is to cancel a running background job.
 
-Please find the companion script `codex-companion.mjs` under the `codex-plugin-agy/plugins/codex/scripts/` directory in the current workspace.
+Please find the companion script `codex-companion.mjs` under the `plugins/codex/scripts/` directory in the current workspace.
 Execute the following command using the `run_command` tool:
 `node "<path to codex-companion.mjs>" cancel {{args}}`
 
