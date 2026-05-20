@@ -48,12 +48,17 @@ export function markDeadPidJobFailed(workspaceRoot, jobId, pid) {
   const completedAt = new Date().toISOString();
   const errorMessage = `Tracked process PID ${pid} exited unexpectedly without writing a terminal status.`;
 
+  // writeJobFile is a raw write; bump updatedAt explicitly so that a re-sort
+  // after reconciliation moves the freshly-failed job to the front of the
+  // newest-first list (otherwise it stays in its pre-reconciliation slot and
+  // can be dropped by the maxJobs slice in buildStatusSnapshot).
   const failedPatch = {
     status: "failed",
     phase: "failed",
     pid: null,
     errorMessage,
-    completedAt
+    completedAt,
+    updatedAt: completedAt
   };
 
   writeJobFile(workspaceRoot, jobId, {
@@ -311,8 +316,11 @@ export function buildStatusSnapshot(cwd, options = {}) {
   const config = getConfig(workspaceRoot);
   const rawJobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
   // Reconcile any active jobs whose tracked PID is dead before partitioning,
-  // so a single status read surfaces stuck workers immediately.
-  const jobs = rawJobs.map((job) => reconcileIfDead(workspaceRoot, job));
+  // so a single status read surfaces stuck workers immediately. Re-sort after
+  // reconciliation because markDeadPidJobFailed bumps updatedAt to now, which
+  // means a stale `running` job that lived near the end of the pre-sort list
+  // must move to the front to survive the maxJobs slice below.
+  const jobs = sortJobsNewestFirst(rawJobs.map((job) => reconcileIfDead(workspaceRoot, job)));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 

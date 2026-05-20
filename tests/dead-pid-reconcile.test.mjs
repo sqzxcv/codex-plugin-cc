@@ -131,3 +131,66 @@ test("buildStatusSnapshot leaves a running job alone when its PID is alive", () 
   assert.equal(snapshot.running[0].id, "task-status-alive");
   assert.equal(snapshot.running[0].status, "running");
 });
+
+test("buildStatusSnapshot surfaces a reconciled dead-pid job even when newer completed jobs would push it past maxJobs", () => {
+  const workspace = makeTempDir();
+  ensureStateDir(workspace);
+
+  // Seed a stale running job whose updatedAt is older than every other entry.
+  // After reconciliation its updatedAt is bumped to now, so without a re-sort
+  // it would keep its old position at the tail of the list and disappear under
+  // the maxJobs slice. This is the codex bot's exact PR184 scenario.
+  const oldIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const staleRunning = {
+    id: "task-stale-running",
+    kind: "task",
+    kindLabel: "rescue",
+    title: "Codex Task",
+    workspaceRoot: workspace,
+    jobClass: "task",
+    summary: "stale",
+    createdAt: oldIso,
+    startedAt: oldIso,
+    updatedAt: oldIso,
+    status: "running",
+    phase: "running",
+    pid: DEAD_PID,
+    logFile: null,
+    ...(TEST_SESSION_ID ? { sessionId: TEST_SESSION_ID } : {})
+  };
+  writeJobFile(workspace, staleRunning.id, staleRunning);
+  upsertJob(workspace, staleRunning);
+
+  // Add 10 newer completed jobs, all with timestamps after the stale one.
+  for (let i = 0; i < 10; i += 1) {
+    const completedAt = new Date(Date.now() - (10 - i) * 60_000).toISOString();
+    const completed = {
+      id: `task-completed-${i}`,
+      kind: "task",
+      kindLabel: "rescue",
+      title: "Codex Task",
+      workspaceRoot: workspace,
+      jobClass: "task",
+      summary: `completed-${i}`,
+      createdAt: completedAt,
+      startedAt: completedAt,
+      updatedAt: completedAt,
+      completedAt,
+      status: "completed",
+      phase: "done",
+      pid: null,
+      logFile: null,
+      ...(TEST_SESSION_ID ? { sessionId: TEST_SESSION_ID } : {})
+    };
+    writeJobFile(workspace, completed.id, completed);
+    upsertJob(workspace, completed);
+  }
+
+  const snapshot = buildStatusSnapshot(workspace, { env: {}, maxJobs: 8 });
+  assert.equal(snapshot.running.length, 0, "reconciled dead job must leave the running list");
+
+  const surfaced =
+    snapshot.latestFinished?.id === "task-stale-running" ||
+    snapshot.recent.some((job) => job.id === "task-stale-running");
+  assert.ok(surfaced, "reconciled dead job must appear in latestFinished or recent");
+});
