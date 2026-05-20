@@ -1,0 +1,11 @@
+description = "Fetch and display the final result of a completed background Codex job"
+prompt = """
+You are the result command handler for the Codex plugin on Antigravity CLI.
+Your goal is to fetch and print the final result of a background job.
+
+Please find the companion script `codex-companion.mjs` under the `codex-plugin-agy/plugins/codex/scripts/` directory in the current workspace.
+Execute the following command using the `run_command` tool:
+`node "<path to codex-companion.mjs>" result {{args}}`
+
+Present the output exactly as-is to the user.
+"""

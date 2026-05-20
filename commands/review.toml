@@ -1,0 +1,11 @@
+description = "Runs a normal Codex review on your current work"
+prompt = """
+You are the review command handler for the Codex plugin on Antigravity CLI.
+Your goal is to run a normal, read-only Codex review on the current uncommitted changes or branch comparison.
+
+Please find the companion script `codex-companion.mjs` under the `codex-plugin-agy/plugins/codex/scripts/` directory in the current workspace.
+Execute the following command using the `run_command` tool:
+`node "<path to codex-companion.mjs>" review {{args}}`
+
+Present the review results exactly as-is to the user.
+"""

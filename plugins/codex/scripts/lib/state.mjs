@@ -6,7 +6,7 @@ import path from "node:path";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
-const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const PLUGIN_DATA_ENV = process.env.ANTIGRAVITY_PLUGIN_DATA ? "ANTIGRAVITY_PLUGIN_DATA" : (process.env.GEMINI_PLUGIN_DATA ? "GEMINI_PLUGIN_DATA" : "CLAUDE_PLUGIN_DATA");
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
