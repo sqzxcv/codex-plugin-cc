@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is `@openai/codex-plugin-cc` — a Claude Code plugin that wraps the [Codex app server](https://developers.openai.com/codex/app-server) and Codex CLI, exposing slash commands (`/codex:review`, `/codex:adversarial-review`, `/codex:rescue`, `/codex:status`, `/codex:result`, `/codex:cancel`, `/codex:setup`) and a `codex:codex-rescue` subagent.
+This is `@openai/codex-plugin-cc` — a Claude Code plugin that wraps the [Codex app server](https://developers.openai.com/codex/app-server) and Codex CLI, exposing slash commands (`/codex:review`, `/codex:adversarial-review`, `/codex:rescue`, `/codex:status`, `/codex:result`, `/codex:cancel`, `/codex:setup`) and a `codex:codex-rescue` subagent. The plugin lives in `plugins/codex/`.
 
 ## Commands
 
@@ -29,9 +29,9 @@ There is no bundler, no runtime transpiler, and no lint step. Tests run the `.mj
 
 ## Architecture
 
-The runtime is a single CLI entry point, `scripts/codex-companion.mjs`, dispatched by subcommand (`setup`, `review`, `adversarial-review`, `task`, `status`, `result`, `cancel`). Slash commands in `commands/*.md` shell out to this script via `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" <subcommand> "$ARGUMENTS"`.
+The runtime is a single CLI entry point, `plugins/codex/scripts/codex-companion.mjs`, dispatched by subcommand (`setup`, `review`, `adversarial-review`, `task`, `status`, `result`, `cancel`). Slash commands in `plugins/codex/commands/*.md` shell out to this script via `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" <subcommand> "$ARGUMENTS"`.
 
-Key modules under `scripts/lib/`:
+Key modules under `plugins/codex/scripts/lib/`:
 
 - `codex.mjs` — high-level Codex operations: auth/availability checks, `runAppServerTurn`, `runAppServerReview`, structured output parsing, session runtime status
 - `app-server.mjs` — low-level Codex app server stdio protocol client
@@ -42,18 +42,18 @@ Key modules under `scripts/lib/`:
 - `git.mjs` — review target resolution (`auto` / `working-tree` / `branch`), context collection
 - `render.mjs` — all user-facing output formatting
 - `args.mjs` — argument parsing; flags like `--wait`, `--background`, `--resume-last`, `--model`, `--effort` are routing controls stripped before the task text is forwarded
-- `prompts.mjs` — loads templates from `prompts/` and interpolates them
+- `prompts.mjs` — loads templates from `plugins/codex/prompts/` and interpolates them
 - `codex-config.mjs` — reads `sandbox_mode` from user's Codex config (`~/.codex/config.toml` / `.codex/config.toml`)
 - `process.mjs` — process tree termination, binary availability checks
 - `workspace.mjs` — resolves the workspace root (honoring `CLAUDE_WORKSPACE_ROOT`)
 
-The `codex:codex-rescue` subagent (`agents/codex-rescue.md`) is a thin forwarding wrapper: it does exactly one `Bash` call to `codex-companion.mjs task ...` and returns stdout verbatim. It must not read the repo, reason about the problem, or do any independent work.
+The `codex:codex-rescue` subagent (`plugins/codex/agents/codex-rescue.md`) is a thin forwarding wrapper: it does exactly one `Bash` call to `codex-companion.mjs task ...` and returns stdout verbatim. It must not read the repo, reason about the problem, or do any independent work.
 
-Hooks are declared in `hooks/hooks.json`:
+Hooks are declared in `plugins/codex/hooks/hooks.json`:
 - `SessionStart` / `SessionEnd` → `session-lifecycle-hook.mjs` (bookkeeping)
 - `Stop` → `stop-review-gate-hook.mjs` (optional review gate; opt-in via `/codex:setup --enable-review-gate`)
 
-Skills in `skills/` (`codex-cli-runtime`, `codex-result-handling`, `gpt-5-4-prompting`) are loaded by the subagent, not by the main Claude thread.
+Skills in `plugins/codex/skills/` (`codex-cli-runtime`, `codex-result-handling`, `gpt-5-4-prompting`) are loaded by the subagent, not by the main Claude thread.
 
 ## Conventions
 
@@ -63,8 +63,8 @@ Skills in `skills/` (`codex-cli-runtime`, `codex-result-handling`, `gpt-5-4-prom
 - The plugin picks up the user's existing `codex` binary, auth state, and `~/.codex/config.toml` / `.codex/config.toml`. Don't hardcode models or endpoints; `MODEL_ALIASES` in `codex-companion.mjs` is the only alias map (`spark` → `gpt-5.3-codex-spark`).
 - Task mode (`/codex:rescue`) reads `sandbox_mode` from the user's Codex config via `codex-config.mjs`. If not configured, falls back to `workspace-write` (when `--write` is set) or `read-only`. Review commands always use `read-only` regardless of config.
 - Tests use temp git repos (`tests/helpers.mjs` → `initGitRepo`) and a fake codex fixture (`tests/fake-codex-fixture.mjs`) to drive the companion script without a real Codex install.
-- `CLAUDE_PLUGIN_ROOT` is set by Claude Code at hook/command invocation time and points at the repo root. Scripts resolve paths relative to `import.meta.url`, not `process.cwd()`.
+- `CLAUDE_PLUGIN_ROOT` is set by Claude Code at hook/command invocation time and points at `plugins/codex/`. Scripts resolve paths relative to `import.meta.url`, not `process.cwd()`.
 
 ## Version
 
-Plugin version is declared in both `package.json` and `.claude-plugin/plugin.json` and must stay in sync. `npm run check-version` enforces this (run in CI). `scripts/bump-version.mjs` updates both.
+Plugin version is declared in both `package.json` and `plugins/codex/.claude-plugin/plugin.json` and must stay in sync. `npm run check-version` enforces this (run in CI). `scripts/bump-version.mjs` updates both.

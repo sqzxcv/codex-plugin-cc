@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { readSandboxModeFromFile, resolveCodexSandboxMode, VALID_SANDBOX_MODES } from "../scripts/lib/codex-config.mjs";
+import { readSandboxModeFromFile, resolveCodexSandboxMode, VALID_SANDBOX_MODES } from "../plugins/codex/scripts/lib/codex-config.mjs";
 
 describe("readSandboxModeFromFile", () => {
   let tempDir;

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { createEventStream, emitEvent, closeEventStream, EVENT_TYPES } from "../scripts/lib/event-stream.mjs";
+import { createEventStream, emitEvent, closeEventStream, EVENT_TYPES } from "../plugins/codex/scripts/lib/event-stream.mjs";
 
 describe("createEventStream", () => {
   let tempDir;

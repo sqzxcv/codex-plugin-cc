@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.1] - 2026-05-20
+## [1.2.2] - 2026-05-21
 
-### Changed
+### Fixed
 
-- **Flattened plugin structure** — moved all plugin content (`commands/`, `hooks/`, `agents/`, `skills/`, `prompts/`, `schemas/`, `scripts/`) from `plugins/codex/` to the repo root. This fixes the Claude Code marketplace installer not discovering slash commands due to the `source` field in `marketplace.json` not being honored.
+- **Marketplace install failure** — restored the `plugins/codex/` subdirectory layout so the Claude Code marketplace installer can discover the plugin.
+  - Reverts the flatten refactor (af88f38) and its follow-up `source: "./"` patch (cf2917c). The Claude Code marketplace spec requires `source` to point at a subdirectory of the marketplace repo (e.g. `./plugins/codex`); pointing it at the marketplace root itself is unsupported and caused installs to fail with "unsupported source type" / undiscoverable commands.
+  - Plugin runtime, commands, hooks, agents, skills, prompts, schemas, and `.claude-plugin/plugin.json` are back under `plugins/codex/`. `marketplace.json` stays at the repo root and now points at `./plugins/codex` again, matching the OpenAI upstream layout.
+- **Align with current codex protocol** — restoring the subdirectory layout also restored correct `.d.ts` relative imports for the generated app-server types, which had been silently broken by the flatten refactor (making TypeScript treat the imported types as `any` and skip checking). With type-check re-enabled, two long-standing protocol-drift bugs surfaced and are now fixed:
+  - `app-server.mjs`: `DEFAULT_CAPABILITIES` now includes `requestAttestation: false`, matching the required `InitializeCapabilities` shape.
+  - `codex.mjs`: removed the obsolete `experimentalRawEvents: false` field from `buildThreadParams`; it is no longer part of `ThreadStartParams` in the current codex protocol.
+  - Runtime behavior is unchanged — codex's JSON-RPC tolerated the missing/extra fields, so existing installs continue to work. This change just unblocks `npm run build` / CI type-checking.
 
 ## [1.2.0] - 2026-05-20
 
@@ -78,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Chinese README (`README.zh-CN.md`)
 - Documented `--worktree` and sandbox_mode configuration
 
+[1.2.2]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.2.0...v1.2.2
 [1.2.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.0.4...v1.1.0
 [1.0.4]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.0.3...v1.0.4

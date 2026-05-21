@@ -18,25 +18,25 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 
 // Files that constitute user-facing functionality
 const SOURCE_GLOBS = [
-  "scripts/",
-  "commands/",
-  "agents/",
-  "skills/",
-  "hooks/",
-  "prompts/"
+  "plugins/codex/scripts/",
+  "plugins/codex/commands/",
+  "plugins/codex/agents/",
+  "plugins/codex/skills/",
+  "plugins/codex/hooks/",
+  "plugins/codex/prompts/"
 ];
 
 // Files that trigger minor bump (new modules, not new commands)
 const MINOR_INDICATORS = [
-  "scripts/lib/",
-  "skills/",
-  "agents/",
-  "hooks/"
+  "plugins/codex/scripts/lib/",
+  "plugins/codex/skills/",
+  "plugins/codex/agents/",
+  "plugins/codex/hooks/"
 ];
 
 // Files that trigger major bump (new user-facing commands)
 const MAJOR_INDICATORS = [
-  "commands/"
+  "plugins/codex/commands/"
 ];
 
 function git(args, options = {}) {
@@ -110,9 +110,9 @@ function detectBumpType(files, commits) {
     (msg) => /BREAKING CHANGE/i.test(msg) || /^[a-z]+(\(.+\))?!:/.test(msg)
   );
   const hasNewCommand = files.some((file) =>
-    file.startsWith("commands/") && !file.endsWith(".md")
+    file.startsWith("plugins/codex/commands/") && !file.endsWith(".md")
       ? false // only new .md command files count
-      : file.startsWith("commands/")
+      : file.startsWith("plugins/codex/commands/")
   );
 
   if (hasBreakingCommit || hasNewCommand) {
