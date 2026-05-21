@@ -14,6 +14,7 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/codex:observe` for real-time live observation of running Codex tasks with ANSI color output
 
 ## Requirements
 
@@ -211,6 +212,35 @@ Examples:
 /codex:cancel task-abc123
 ```
 
+### `/codex:observe`
+
+Opens a real-time live observer for a running Codex job. Shows tool calls, file changes, commands, messages, and reasoning with ANSI color output.
+
+The observer is **read-only** and does not affect the running Codex task. Press `Ctrl+C` to detach — the Codex task continues running.
+
+**Best used in a separate terminal window** so you can watch Codex work while continuing your Claude Code session.
+
+Examples:
+
+```bash
+/codex:observe
+/codex:observe task-abc123
+/codex:observe --cwd /path/to/project
+```
+
+**Color legend:**
+
+| Color | Event Type |
+|-------|-----------|
+| Cyan | Tool calls (`→ Read src/foo.ts`) |
+| Blue | Commands (`$ npm test`) |
+| Green | Success (`exit 0`, `● completed`) |
+| Red | Failure (`exit 1`) |
+| Yellow | File changes (`✎ src/auth.ts (modify)`) |
+| Dim | Messages and reasoning |
+
+If the target job is already completed, the observer renders the full event history and exits immediately.
+
 ### `/codex:setup`
 
 Checks whether Codex is installed and authenticated.
@@ -250,6 +280,16 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 /codex:adversarial-review --background
 /codex:rescue --background investigate the flaky test
 ```
+
+### Watch Codex Work in Real-Time
+
+In a separate terminal:
+
+```bash
+/codex:observe
+```
+
+This gives you a live, color-coded view of what Codex is doing — tool calls, file edits, test runs, and its final answer — without blocking your Claude Code session.
 
 ### Isolated Work With `--worktree`
 

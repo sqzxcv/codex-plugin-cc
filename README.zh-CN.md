@@ -13,6 +13,7 @@
 - `/codex:review` — 常规只读 Codex 代码审查
 - `/codex:adversarial-review` — 可引导的对抗性审查
 - `/codex:rescue`、`/codex:status`、`/codex:result`、`/codex:cancel` — 委派任务和管理后台作业
+- `/codex:observe` — 实时观察运行中的 Codex 任务，支持 ANSI 彩色输出
 
 ## 环境要求
 
@@ -208,6 +209,35 @@ Ask Codex to redesign the database connection to be more resilient.
 /codex:cancel task-abc123
 ```
 
+### `/codex:observe`
+
+为运行中的 Codex 任务开启实时观察。以 ANSI 彩色输出显示工具调用、文件变更、命令执行、消息和推理过程。
+
+观察器为**只读**模式，不会影响正在运行的 Codex 任务。按 `Ctrl+C` 可断开观察 — Codex 任务会继续运行。
+
+**建议在单独的终端窗口中使用**，这样你可以在继续 Claude Code 会话的同时观察 Codex 的工作。
+
+示例：
+
+```bash
+/codex:observe
+/codex:observe task-abc123
+/codex:observe --cwd /path/to/project
+```
+
+**颜色说明：**
+
+| 颜色 | 事件类型 |
+|------|---------|
+| 青色 | 工具调用（`→ Read src/foo.ts`） |
+| 蓝色 | 命令执行（`$ npm test`） |
+| 绿色 | 成功（`exit 0`、`● completed`） |
+| 红色 | 失败（`exit 1`） |
+| 黄色 | 文件变更（`✎ src/auth.ts (modify)`） |
+| 暗色 | 消息和推理 |
+
+如果目标任务已完成，观察器会渲染完整的事件历史后立即退出。
+
 ### `/codex:setup`
 
 检查 Codex 是否已安装并完成认证。如果 Codex 未安装且 npm 可用，它会提示你自动安装。
@@ -246,6 +276,16 @@ Ask Codex to redesign the database connection to be more resilient.
 /codex:adversarial-review --background
 /codex:rescue --background investigate the flaky test
 ```
+
+### 实时观察 Codex 工作
+
+在单独的终端中：
+
+```bash
+/codex:observe
+```
+
+这会给你一个实时、彩色的视图，显示 Codex 正在做什么 — 工具调用、文件编辑、测试运行和最终答案 — 而不会阻塞你的 Claude Code 会话。
 
 ### 使用 `--worktree` 隔离工作
 
