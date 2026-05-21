@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-05-21
+
+### Changed
+
+- **Marketplace renamed `openai-codex` → `dragon-cc-codex`** to disambiguate this fork from the upstream OpenAI marketplace and avoid the name collision that would prevent a user from having both installed side by side.
+  - `.claude-plugin/marketplace.json`: `name` field updated.
+  - `README.md` / `README.zh-CN.md`: install instructions now point at `dragon84867/codex-plugin-cc` (fork repo) and `codex@dragon-cc-codex` (renamed marketplace).
+  - **Migration for existing users**: run `/plugin marketplace remove openai-codex` once, then re-add via `/plugin marketplace add dragon84867/codex-plugin-cc` and `/plugin install codex@dragon-cc-codex`.
+
 ## [1.2.2] - 2026-05-21
 
 ### Fixed
@@ -84,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Chinese README (`README.zh-CN.md`)
 - Documented `--worktree` and sandbox_mode configuration
 
+[1.2.3]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.2.0...v1.2.2
 [1.2.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.0.4...v1.1.0

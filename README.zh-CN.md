@@ -26,13 +26,13 @@
 在 Claude Code 中添加插件市场：
 
 ```bash
-/plugin marketplace add openai/codex-plugin-cc
+/plugin marketplace add dragon84867/codex-plugin-cc
 ```
 
 安装插件：
 
 ```bash
-/plugin install codex@openai-codex
+/plugin install codex@dragon-cc-codex
 ```
 
 重新加载插件：
