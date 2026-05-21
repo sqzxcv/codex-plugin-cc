@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { resolveCodexSandboxMode } from "./lib/codex-config.mjs";
+import { createEventStream, EVENT_TYPES, emitEvent } from "./lib/event-stream.mjs";
+import { handleObserveCommand } from "./lib/observe.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -83,7 +85,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  node scripts/codex-companion.mjs observe [job-id] [--cwd <path>]"
     ].join("\n")
   );
 }
@@ -596,11 +599,16 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 function createTrackedProgress(job, options = {}) {
   const logFile = options.logFile ?? createJobLogFile(job.workspaceRoot, job.id, job.title);
+  const jobsDir = resolveJobsDir(job.workspaceRoot);
+  const eventStream = createEventStream(job.id, jobsDir);
   return {
     logFile,
+    eventFile: eventStream.eventFile,
+    eventStream,
     progress: createProgressReporter({
       stderr: Boolean(options.stderr),
       logFile,
+      eventStream,
       onEvent: createJobProgressUpdater(job.workspaceRoot, job.id)
     })
   };
@@ -661,11 +669,18 @@ function requireTaskRequest(prompt, resumeLast) {
 }
 
 async function runForegroundCommand(job, runner, options = {}) {
-  const { logFile, progress } = createTrackedProgress(job, {
+  const { logFile, eventFile, eventStream, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
     stderr: !options.json
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
+  const execution = await runTrackedJob(job, () => runner(progress), { logFile, eventFile });
+  if (eventStream) {
+    emitEvent(eventStream, EVENT_TYPES.COMPLETED, {
+      status: execution.exitStatus === 0 ? "success" : "failure",
+      phase: execution.exitStatus === 0 ? "done" : "failed",
+      summary: execution.summary ?? null
+    });
+  }
   outputResult(options.json ? execution.payload : execution.rendered, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
@@ -687,7 +702,7 @@ function spawnDetachedTaskWorker(cwd, jobId) {
 }
 
 function enqueueBackgroundTask(cwd, job, request) {
-  const { logFile } = createTrackedProgress(job);
+  const { logFile, eventFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
   const child = spawnDetachedTaskWorker(cwd, job.id);
@@ -699,6 +714,7 @@ function enqueueBackgroundTask(cwd, job, request) {
     phase: "queued",
     pid: child.pid ?? null,
     logFile,
+    eventFile,
     signalFile,
     request
   };
@@ -712,6 +728,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       title: job.title,
       summary: job.summary,
       logFile,
+      eventFile,
       jobsDir,
       signalFile,
       worktreePath: job.worktreePath ?? null,
@@ -873,7 +890,7 @@ async function handleTaskWorker(argv) {
     throw new Error(`Stored job ${options["job-id"]} is missing its task request payload.`);
   }
 
-  const { logFile, progress } = createTrackedProgress(
+  const { logFile, eventFile, eventStream, progress } = createTrackedProgress(
     {
       ...storedJob,
       workspaceRoot
@@ -882,19 +899,27 @@ async function handleTaskWorker(argv) {
       logFile: storedJob.logFile ?? null
     }
   );
-  await runTrackedJob(
+  const execution = await runTrackedJob(
     {
       ...storedJob,
       workspaceRoot,
-      logFile
+      logFile,
+      eventFile
     },
     () =>
       executeTaskRun({
         ...request,
         onProgress: progress
       }),
-    { logFile }
+    { logFile, eventFile }
   );
+  if (eventStream) {
+    emitEvent(eventStream, EVENT_TYPES.COMPLETED, {
+      status: execution.exitStatus === 0 ? "success" : "failure",
+      phase: execution.exitStatus === 0 ? "done" : "failed",
+      summary: execution.summary ?? null
+    });
+  }
 }
 
 async function handleStatus(argv) {
@@ -1074,6 +1099,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "observe":
+      await handleObserveCommand(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

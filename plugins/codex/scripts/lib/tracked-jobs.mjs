@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+import { emitEvent, EVENT_TYPES } from "./event-stream.mjs";
 import { readJobFile, resolveJobFile, resolveJobLogFile, resolveJobsDir, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -131,8 +132,19 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
   };
 }
 
-export function createProgressReporter({ stderr = false, logFile = null, onEvent = null } = {}) {
-  if (!stderr && !logFile && !onEvent) {
+function inferEventStreamType(event) {
+  const title = event.logTitle ?? "";
+  if (/reasoning summary/i.test(title)) {
+    return EVENT_TYPES.REASONING;
+  }
+  if (/message$/i.test(title) || /review output/i.test(title)) {
+    return EVENT_TYPES.MESSAGE;
+  }
+  return EVENT_TYPES.PHASE;
+}
+
+export function createProgressReporter({ stderr = false, logFile = null, onEvent = null, eventStream = null } = {}) {
+  if (!stderr && !logFile && !onEvent && !eventStream) {
     return null;
   }
 
@@ -144,6 +156,26 @@ export function createProgressReporter({ stderr = false, logFile = null, onEvent
     }
     appendLogLine(logFile, event.message);
     appendLogBlock(logFile, event.logTitle, event.logBody);
+    if (eventStream) {
+      const type = inferEventStreamType(event);
+      const data = { phase: event.phase };
+      if (event.message) {
+        data.message = event.message;
+      }
+      if (event.threadId) {
+        data.threadId = event.threadId;
+      }
+      if (event.turnId) {
+        data.turnId = event.turnId;
+      }
+      if (event.logTitle) {
+        data.logTitle = event.logTitle;
+      }
+      if (event.logBody) {
+        data.logBody = event.logBody;
+      }
+      emitEvent(eventStream, type, data);
+    }
     onEvent?.(event);
   };
 }
@@ -163,7 +195,8 @@ export async function runTrackedJob(job, runner, options = {}) {
     startedAt: nowIso(),
     phase: "starting",
     pid: process.pid,
-    logFile: options.logFile ?? job.logFile ?? null
+    logFile: options.logFile ?? job.logFile ?? null,
+    eventFile: options.eventFile ?? job.eventFile ?? null
   };
   writeJobFile(job.workspaceRoot, job.id, runningRecord);
   upsertJob(job.workspaceRoot, runningRecord);
