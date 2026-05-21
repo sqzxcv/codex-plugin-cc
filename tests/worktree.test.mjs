@@ -9,7 +9,7 @@ import {
   resolveWorktreePath,
   generateWorktreeBranch,
   createWorktree
-} from "../plugins/codex/scripts/lib/workspace.mjs";
+} from "../scripts/lib/workspace.mjs";
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {

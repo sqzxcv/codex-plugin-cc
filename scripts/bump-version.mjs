@@ -39,7 +39,7 @@ const TARGETS = [
     ]
   },
   {
-    file: "plugins/codex/.claude-plugin/plugin.json",
+    file: ".claude-plugin/plugin.json",
     values: [
       {
         label: "version",

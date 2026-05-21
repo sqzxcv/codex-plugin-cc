@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderWorktreesBlock, renderTaskResult } from "../plugins/codex/scripts/lib/render.mjs";
+import { renderWorktreesBlock, renderTaskResult } from "../scripts/lib/render.mjs";
 
 describe("renderWorktreesBlock", () => {
   it("returns null when no worktreePath", () => {

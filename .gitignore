@@ -147,7 +147,7 @@ vite.config.ts.timestamp-*
 .vite/
 
 output/
-plugins/codex/.generated/
+.generated/
 
 # Local tool state (Claude Code, Codex plugin runtime)
 .claude/
