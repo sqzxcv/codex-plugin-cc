@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-05-22
+
+### Fixed
+
+- **Cross-session "Job not found" still bit users in 1.2.5** because the per-process `CLAUDE_PLUGIN_DATA` env var fragmented state across multiple roots that no single scan covered. Two real-world triggers exposed it: (a) the marketplace rename `openai-codex → dragon-cc-codex` (commit `e6ef383`) moved Claude Code's plugin data path from `~/.claude/plugins/data/codex-openai-codex/` to `~/.claude/plugins/data/codex-dragon-cc-codex/`, orphaning jobs created before the rename; (b) running `codex-companion.mjs` from a shell without `CLAUDE_PLUGIN_DATA` set silently fell through to `$TMPDIR/codex-companion/`, which is volatile and disjoint from the plugin data dir. `findJobByIdAcrossWorkspaces` introduced in 1.2.5 only scanned `resolveStateRoot()`, so it could not see across these roots. Users worked around the symptom by exporting `CLAUDE_PLUGIN_DATA` manually before each invocation.
+  - `plugins/codex/scripts/lib/state.mjs`: default fallback root moved from `$TMPDIR/codex-companion/` (volatile, per-user-launchd) to `~/.codex-companion/state/` (stable, HOME-anchored). `CLAUDE_PLUGIN_DATA` is still honored when the plugin host sets it, so we remain a good plugin citizen.
+  - `findJobByIdAcrossWorkspaces` now iterates `collectCandidateStateRoots()`: the current `resolveStateRoot()`, the HOME default, `$TMPDIR/codex-companion/` (legacy), and every `~/.claude/plugins/data/codex-*/state/` directory (handles slug renames). Scan order keeps the current root first so test fixtures are not shadowed by leftover legacy data.
+  - New `collectWorkspaceJobsAcrossRoots(workspaceRoot)` reads `state.json` for the workspace's slug-hash across every candidate root and merges jobs by id (newer `updatedAt` wins on conflict).
+  - `lib/job-control.mjs` `buildStatusSnapshot`: with `--all`, jobs are now collected across roots **and** the per-Claude-session filter is bypassed, so users in a fresh session can recover the id of a job they created in an earlier session via `/codex:status --all`. The default (no flag) still scopes to the current session in the current root — explicit opt-in to the wider view.
+  - Test isolation: cleaned 246 leaked `codex-plugin-test-*` and `broker-test-*` state directories under `~/.claude/plugins/data/codex-dragon-cc-codex/state/` and 167 under `$TMPDIR/codex-companion/` that prior `npm test` runs deposited into the real user plugin data dir. `tests/helpers.mjs` now rewrites `CLAUDE_PLUGIN_DATA` to a per-suite `mkdtemp` path if it points outside `os.tmpdir()`, sets `CODEX_COMPANION_LEGACY_ROOTS=""` so the multi-root scan stays sandboxed for ordinary tests, and strips `CODEX_COMPANION_SESSION_ID` from the test process so fixture jobs without a `sessionId` are not session-filtered out by status/result subprocesses.
+  - New env knob `CODEX_COMPANION_LEGACY_ROOTS` (path-separated): empty string disables legacy scanning (test isolation default); non-empty replaces the legacy scan list with the supplied roots so regression tests can exercise the cross-root fallback without polluting real directories.
+  - Tests: `tests/state.test.mjs` swaps the old "temp-backed per-workspace directory" assertion for a HOME-anchored fallback test that explicitly unsets `CLAUDE_PLUGIN_DATA`. `tests/job-control.test.mjs` gains a `multi-root state scan` suite that proves `findJobByIdAcrossWorkspaces` falls through to a legacy root and `buildStatusSnapshot({ all: true })` merges jobs from primary + legacy state files for the same workspace slug.
+
 ## [1.2.5] - 2026-05-22
 
 ### Fixed

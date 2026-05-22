@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
 import {
+  collectWorkspaceJobsAcrossRoots,
   findJobByIdAcrossWorkspaces,
   getConfig,
   listJobs,
@@ -233,7 +234,10 @@ function findCrossWorkspaceMatch(reference, predicate) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const rawJobs = options.all
+    ? collectWorkspaceJobsAcrossRoots(workspaceRoot)
+    : filterJobsForCurrentSession(listJobs(workspaceRoot), options);
+  const jobs = sortJobsNewestFirst(rawJobs);
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
 

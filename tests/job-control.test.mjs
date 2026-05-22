@@ -7,9 +7,11 @@ import assert from "node:assert/strict";
 
 import {
   buildSingleJobSnapshot,
+  buildStatusSnapshot,
   resolveCancelableJob,
   resolveResultJob
 } from "../plugins/codex/scripts/lib/job-control.mjs";
+import { collectWorkspaceJobsAcrossRoots, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 describe("job-control cross-workspace fallback", () => {
   let pluginDataDir;
@@ -134,5 +136,109 @@ describe("job-control cross-workspace fallback", () => {
       () => resolveCancelableJob(currentWorkspace, "", { env: {} }),
       /No active Codex jobs to cancel/
     );
+  });
+});
+
+describe("multi-root state scan", () => {
+  let primaryDataDir;
+  let legacyRoot;
+  let currentWorkspace;
+  let previousPluginData;
+  let previousLegacyRoots;
+
+  beforeEach(() => {
+    primaryDataDir = mkdtempSync(path.join(tmpdir(), "multi-root-primary-"));
+    legacyRoot = mkdtempSync(path.join(tmpdir(), "multi-root-legacy-"));
+    currentWorkspace = mkdtempSync(path.join(tmpdir(), "multi-root-cwd-"));
+    previousPluginData = process.env.CLAUDE_PLUGIN_DATA;
+    previousLegacyRoots = process.env.CODEX_COMPANION_LEGACY_ROOTS;
+    process.env.CLAUDE_PLUGIN_DATA = primaryDataDir;
+    process.env.CODEX_COMPANION_LEGACY_ROOTS = legacyRoot;
+  });
+
+  afterEach(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
+    }
+    if (previousLegacyRoots === undefined) {
+      delete process.env.CODEX_COMPANION_LEGACY_ROOTS;
+    } else {
+      process.env.CODEX_COMPANION_LEGACY_ROOTS = previousLegacyRoots;
+    }
+    rmSync(primaryDataDir, { recursive: true, force: true });
+    rmSync(legacyRoot, { recursive: true, force: true });
+    rmSync(currentWorkspace, { recursive: true, force: true });
+  });
+
+  function writeStateAt(rootDir, slug, state) {
+    const stateDir = path.join(rootDir, slug);
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, "state.json"),
+      `${JSON.stringify(state, null, 2)}\n`,
+      "utf8"
+    );
+    return stateDir;
+  }
+
+  it("findJobByIdAcrossWorkspaces falls through to a legacy root", () => {
+    const job = {
+      id: "task-only-in-legacy",
+      status: "completed",
+      workspaceRoot: "/legacy/repo",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const stateDir = writeStateAt(legacyRoot, "legacy-foo-0011223344556677", {
+      version: 1,
+      jobs: [job]
+    });
+
+    const snapshot = buildSingleJobSnapshot(currentWorkspace, "task-only-in-legacy");
+    assert.equal(snapshot.crossWorkspace, true);
+    assert.equal(snapshot.crossWorkspaceStateDir, stateDir);
+    assert.equal(snapshot.job.id, "task-only-in-legacy");
+  });
+
+  it("buildStatusSnapshot --all merges jobs for the same workspace across roots", () => {
+    const primaryStateDir = resolveStateDir(currentWorkspace);
+    const slug = path.basename(primaryStateDir);
+
+    writeStateAt(path.join(primaryDataDir, "state"), slug, {
+      version: 1,
+      jobs: [
+        {
+          id: "task-primary",
+          status: "completed",
+          createdAt: "2026-05-22T10:00:00.000Z",
+          updatedAt: "2026-05-22T10:00:00.000Z"
+        }
+      ]
+    });
+
+    writeStateAt(legacyRoot, slug, {
+      version: 1,
+      jobs: [
+        {
+          id: "task-legacy",
+          status: "completed",
+          createdAt: "2026-05-22T09:00:00.000Z",
+          updatedAt: "2026-05-22T09:00:00.000Z"
+        }
+      ]
+    });
+
+    const merged = collectWorkspaceJobsAcrossRoots(currentWorkspace)
+      .map((job) => job.id)
+      .sort();
+    assert.deepEqual(merged, ["task-legacy", "task-primary"]);
+
+    const snapshot = buildStatusSnapshot(currentWorkspace, { all: true, env: {} });
+    const ids = [...snapshot.running, ...(snapshot.latestFinished ? [snapshot.latestFinished] : []), ...snapshot.recent]
+      .map((job) => job.id)
+      .sort();
+    assert.deepEqual(ids, ["task-legacy", "task-primary"]);
   });
 });
