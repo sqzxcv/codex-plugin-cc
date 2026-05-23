@@ -386,13 +386,15 @@ rl.on("line", (line) => {
           .join("\\n");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
-	        state.lastTurnStart = {
-	          threadId: message.params.threadId,
-	          turnId,
-	          model: message.params.model ?? null,
-	          effort: message.params.effort ?? null,
-	          prompt
-	        };
+        state.lastTurnStart = {
+          threadId: message.params.threadId,
+          turnId,
+          model: message.params.model ?? null,
+          effort: message.params.effort ?? null,
+          approvalPolicy: message.params.approvalPolicy ?? null,
+          sandboxPolicy: message.params.sandboxPolicy ?? null,
+          prompt
+        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 

@@ -425,6 +425,8 @@ test("task --full-access forwards danger-full-access sandbox", () => {
   fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastThreadResume.threadId, "thr_1");
   assert.equal(fakeState.lastThreadResume.sandbox, "danger-full-access");
+  assert.equal(fakeState.lastTurnStart.approvalPolicy, "never");
+  assert.deepEqual(fakeState.lastTurnStart.sandboxPolicy, { type: "dangerFullAccess" });
 });
 
 test("task-resume-candidate returns the latest rescue thread from the current session", () => {
