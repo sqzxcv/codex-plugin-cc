@@ -77,7 +77,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write|--full-access] [--sandbox <read-only|workspace-write|danger-full-access>] [--resume-thread <thread-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -461,11 +461,17 @@ async function executeTaskRun(request) {
 
   const taskMetadata = buildTaskRunMetadata({
     prompt: request.prompt,
-    resumeLast: request.resumeLast
+    resumeLast: request.resumeLast || Boolean(request.resumeThreadId)
   });
 
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  let resumeThreadId = request.resumeThreadId ?? null;
+  if (resumeThreadId) {
+    const id = String(resumeThreadId).trim();
+    if (!id || /\s/.test(id)) {
+      throw new Error(`Invalid --resume-thread value: ${resumeThreadId}`);
+    }
+    resumeThreadId = id;
+  } else if (request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -476,7 +482,7 @@ async function executeTaskRun(request) {
   }
 
   if (!request.prompt && !resumeThreadId) {
-    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
+    throw new Error("Provide a prompt, a prompt file, piped stdin, --resume-thread, or use --resume-last.");
   }
 
   const result = await runAppServerTurn(workspaceRoot, {
@@ -485,7 +491,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: request.sandbox || (request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -598,14 +604,16 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, resumeLast, resumeThreadId, jobId }) {
   return {
     cwd,
     model,
     effort,
     prompt,
     write,
+    sandbox,
     resumeLast,
+    resumeThreadId,
     jobId
   };
 }
@@ -619,10 +627,31 @@ function readTaskPrompt(cwd, options, positionals) {
   return positionalPrompt || readStdinIfPiped();
 }
 
-function requireTaskRequest(prompt, resumeLast) {
-  if (!prompt && !resumeLast) {
-    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
+function requireTaskRequest(prompt, resumeLast, resumeThreadId = null) {
+  if (!prompt && !resumeLast && !resumeThreadId) {
+    throw new Error("Provide a prompt, a prompt file, piped stdin, --resume-thread, or use --resume-last.");
   }
+}
+
+function resolveTaskSandbox(options, write) {
+  const requested = typeof options.sandbox === "string" && options.sandbox.trim()
+    ? options.sandbox.trim()
+    : null;
+  const envFullAccess = process.env.CODEX_CLAUDE_COLLABORATION_FULL_ACCESS === "1"
+    || process.env.CODEX_HANDOFF_FULL_ACCESS === "1";
+  if (options["full-access"] || envFullAccess) {
+    if (requested && requested !== "danger-full-access") {
+      throw new Error("Choose either --full-access/CODEX_CLAUDE_COLLABORATION_FULL_ACCESS or a non-full-access --sandbox, not both.");
+    }
+    return "danger-full-access";
+  }
+  if (requested) {
+    if (!["read-only", "workspace-write", "danger-full-access"].includes(requested)) {
+      throw new Error("Invalid --sandbox value. Expected read-only, workspace-write, or danger-full-access.");
+    }
+    return requested;
+  }
+  return write ? "workspace-write" : "read-only";
 }
 
 async function runForegroundCommand(job, runner, options = {}) {
@@ -731,8 +760,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-thread", "sandbox"],
+    booleanOptions: ["json", "write", "full-access", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
     }
@@ -745,19 +774,26 @@ async function handleTask(argv) {
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
+  const resumeThreadId = typeof options["resume-thread"] === "string" && options["resume-thread"].trim()
+    ? options["resume-thread"].trim()
+    : null;
   const fresh = Boolean(options.fresh);
-  if (resumeLast && fresh) {
-    throw new Error("Choose either --resume/--resume-last or --fresh.");
+  if ((resumeLast || resumeThreadId) && fresh) {
+    throw new Error("Choose either --resume/--resume-last/--resume-thread or --fresh.");
   }
-  const write = Boolean(options.write);
+  if (resumeLast && resumeThreadId) {
+    throw new Error("Choose either --resume-last/--resume or --resume-thread, not both.");
+  }
+  const write = Boolean(options.write || options["full-access"] || options.sandbox === "workspace-write" || options.sandbox === "danger-full-access");
+  const sandbox = resolveTaskSandbox(options, write);
   const taskMetadata = buildTaskRunMetadata({
     prompt,
-    resumeLast
+    resumeLast: resumeLast || Boolean(resumeThreadId)
   });
 
   if (options.background) {
     ensureCodexAvailable(cwd);
-    requireTaskRequest(prompt, resumeLast);
+    requireTaskRequest(prompt, resumeLast, resumeThreadId);
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
     const request = buildTaskRequest({
@@ -766,7 +802,9 @@ async function handleTask(argv) {
       effort,
       prompt,
       write,
+      sandbox,
       resumeLast,
+      resumeThreadId,
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -784,7 +822,9 @@ async function handleTask(argv) {
         effort,
         prompt,
         write,
+        sandbox,
         resumeLast,
+        resumeThreadId,
         jobId: job.id,
         onProgress: progress
       }),

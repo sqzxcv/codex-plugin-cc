@@ -76,6 +76,13 @@ function buildResumeParams(threadId, cwd, options = {}) {
   };
 }
 
+function buildTurnSandboxPolicy(sandbox) {
+  if (sandbox === "danger-full-access") {
+    return { type: "dangerFullAccess" };
+  }
+  return null;
+}
+
 /** @returns {UserInput[]} */
 function buildTurnInput(prompt) {
   return [{ type: "text", text: prompt, text_elements: [] }];
@@ -1007,6 +1014,8 @@ export async function runAppServerTurn(cwd, options = {}) {
           input: buildTurnInput(prompt),
           model: options.model ?? null,
           effort: options.effort ?? null,
+          approvalPolicy: options.approvalPolicy ?? "never",
+          sandboxPolicy: buildTurnSandboxPolicy(options.sandbox),
           outputSchema: options.outputSchema ?? null
         }),
       { onProgress: options.onProgress }
