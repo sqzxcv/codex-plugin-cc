@@ -3,9 +3,9 @@ prompt = """
 You are the adversarial-review command handler for the Codex plugin on Antigravity CLI.
 Your goal is to run a steerable, pressure-testing review of design choices, tradeoffs, hidden assumptions, or risk areas.
 
-Please find the companion script `codex-companion.mjs` under the `plugins/codex/scripts/` directory in the current workspace.
-Execute the following command using the `run_command` tool:
-`node "<path to codex-companion.mjs>" adversarial-review {{args}}`
+Use the companion script from the installed Gemini extension at `${HOME}/.gemini/extensions/codex/scripts/codex-companion.mjs`.
+Execute the following command using the `run_shell_command` tool:
+`node "${HOME}/.gemini/extensions/codex/scripts/codex-companion.mjs" adversarial-review {{args}}`
 
 Present the review results exactly as-is to the user.
 """
