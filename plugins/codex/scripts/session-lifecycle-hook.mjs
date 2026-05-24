@@ -17,7 +17,7 @@ import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
-const PLUGIN_DATA_ENV = process.env.ANTIGRAVITY_PLUGIN_DATA ? "ANTIGRAVITY_PLUGIN_DATA" : (process.env.GEMINI_PLUGIN_DATA ? "GEMINI_PLUGIN_DATA" : "CLAUDE_PLUGIN_DATA");
+const PLUGIN_DATA_ENV = process.env.CLAUDE_PLUGIN_DATA ? "CLAUDE_PLUGIN_DATA" : (process.env.GEMINI_PLUGIN_DATA ? "GEMINI_PLUGIN_DATA" : "ANTIGRAVITY_PLUGIN_DATA");
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -32,7 +32,7 @@ function shellEscape(value) {
 }
 
 function appendEnvVar(name, value) {
-  const envFile = process.env.ANTIGRAVITY_ENV_FILE || process.env.GEMINI_ENV_FILE || process.env.CLAUDE_ENV_FILE;
+  const envFile = process.env.CLAUDE_ENV_FILE || process.env.GEMINI_ENV_FILE || process.env.ANTIGRAVITY_ENV_FILE;
   if (!envFile || value == null || value === "") {
     return;
   }

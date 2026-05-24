@@ -141,7 +141,7 @@ function runStopReview(cwd, input = {}) {
 
 function main() {
   const input = readHookInput();
-  const cwd = input.cwd || process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR || process.env.ANTIGRAVITY_PROJECT_DIR || process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
 
