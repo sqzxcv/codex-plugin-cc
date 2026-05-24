@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-23
+
+### Added
+
+- **`/codex:observe` now auto-spawns the observer inside Ghostty and iTerm2 on macOS** (previously tmux-only, shipped in 1.3.0). The single hardcoded tmux branch in `plugins/codex/scripts/lib/spawner.mjs` was replaced with a small backend strategy table `{ kind, detect, build, cmd, classifyFailure }` driving three backends:
+  - `tmux` — unchanged (`split-window -h -c <cwd> <command>`); detection via `$TMUX`.
+  - `ghostty-mac` — detection via `process.platform === 'darwin'` AND `process.env.TERM_PROGRAM === 'ghostty'` AND no `$TMUX`. Always opens a new Ghostty window (Ghostty 1.3's terminal object exposes only `id`, `name`, `working directory` — no `tty`, so reliable session targeting is impossible until upstream adds it). Drills `set newWin to new window` → `set newTerm to terminal 1 of selected tab of newWin` → `input text "<cmd>\n" to newTerm`.
+  - `iterm2-mac` — detection via `process.platform === 'darwin'` AND `process.env.TERM_PROGRAM === 'iTerm.app'` AND no `$TMUX`. Walks the process ancestry to discover the caller shell's controlling tty, then iterates `windows → tabs of w → sessions of tb` (sessions are nested under tabs in iTerm2's object model, NOT directly under windows) comparing `tty of s` to the caller tty. On match: `split vertically with default profile` in that session. On no match (or tty discovery failure): `create window with default profile` and `current session of newWindow`.
+- Detection precedence is `tmux > ghostty-mac > iterm2-mac > none`; users running tmux inside Ghostty/iTerm2 still get the tmux split.
+- Two-layer command quoting pipeline for osascript backends: `composeShellInvocation({ cwd, command })` (shell-quotes cwd, leaves the already-shell-quoted argv tokens of `command` untouched) → `rejectControlChars(composed)` (early-returns `unsafe-command` on any byte in `0x00–0x1F` minus tab/space, so embedded newlines / NUL / CR can never reach `input text` / `write text`) → `escapeAppleScriptLiteral(composed)` (doubles `\` and `"`).
+- Automation-permission denial classified separately from generic spawn failure: when `osascript` stderr contains `(-1743)` or `not authorized to send Apple events` (case-insensitive), the spawner returns `reason: 'automation-permission-denied'` and `handleObserveSpawn` prints a single dedicated line directing the user to System Settings → Privacy & Security → Automation, instead of the generic copy-paste fallback hint.
+- `discoverCallerTty()` walks up the process tree via `ps -o tty=,ppid= -p <pid>` (depth-capped at 10, per-probe timeout 250ms) until it finds an ancestor with a real controlling tty, and resolves to `/dev/ttysNN`. Sandboxed shells / detached daemons that lack `ps` access fall through to the new-window branch with no AppleScript `repeat` loop emitted.
+
+### Fixed
+
+- **Three HIGH-severity AppleScript object-model bugs from the initial 1.4.0 implementation**, surfaced by `/codex:adversarial-review` and confirmed against the published Ghostty 1.3 and iTerm2 dictionaries via Context7:
+  - The Ghostty backend used `repeat with t in terminals … if tty of t is targetTty …`, but Ghostty 1.3's terminal has no `tty` property — that branch would have thrown at runtime in real Ghostty. Removed the `repeat` entirely; Ghostty backend always opens a new window.
+  - The Ghostty backend treated `new window`'s return value as a terminal and called `input text … to newWin` directly. AppleScript would have refused the cast at runtime. Now drills via `set newTerm to terminal 1 of selected tab of newWin` before `input text`.
+  - The iTerm2 backend traversed `repeat with w in windows / repeat with s in sessions of w / …`. That AppleScript-compiles, but `sessions` is NOT a direct element of `window` in iTerm2's object model — at runtime the inner loop iterated an empty collection, so the tty-match branch never fired and every observer fell through to the new-window path. Now correctly nests `repeat with w in windows → repeat with tb in tabs of w → repeat with s in sessions of tb`. A spec scenario locks the source order so the contract cannot regress.
+- Tests strengthened with contract-shape assertions (Ghostty: `set newWin to new window`, `set newTerm to terminal 1 of selected tab of newWin`, `input text "…" to newTerm`, plus negative `tty of t` / `repeat with t in terminals`; iTerm2: `repeat with w in windows`, `repeat with tb in tabs of w`, `repeat with s in sessions of tb`, plus source-order assertion). Added a dedicated 8-test `discoverCallerTty` unit suite covering immediate-parent hit, walk-past-`??`-ancestor, `/dev/` prefix preservation, `ppid<=1` termination, runProbe throws, malformed output, depth-10 cap, and invalid `startPid`.
+
+## [1.3.0] - 2026-05-22
+
+### Added
+
+- **`/codex:observe` auto-spawns the observer in a tmux split when invoked from inside a tmux session.** Previously the slash command always printed the observe invocation as a copy-paste hint and required the user to open a new pane manually. The new flow detects `$TMUX` and shells out to `tmux split-window -h -c <workspace> <observer-cmd>`, then prints `✓ Observer launched in tmux pane (job <job-id>)`. Outside tmux the command falls back to the existing copy-paste hint, so non-tmux users see no behavior change.
+- New `plugins/codex/scripts/lib/spawner.mjs` module with `detectTerminal`, `buildTmuxSplitArgs`, and `spawnObserverInTerminal({ cwd, command, env, runner })`. The runner is injected, so unit tests pass a fake without invoking real `tmux`.
+- New `tests/spawner.test.mjs` covers tmux detection, split-args shape, success / non-zero-exit / runner-throw classification, and the no-tmux pass-through path.
+
 ## [1.2.6] - 2026-05-22
 
 ### Fixed

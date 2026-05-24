@@ -221,7 +221,13 @@ Opens a real-time live observer for a running Codex job. Shows tool calls, file 
 
 The observer is **read-only** and does not affect the running Codex task. Press `Ctrl+C` to detach — the Codex task continues running.
 
-**Best used in a separate terminal window** so you can watch Codex work while continuing your Claude Code session.
+**Auto-spawn (1.3.0+):** when invoked from inside a supported terminal, `/codex:observe` opens the observer in a new pane / window automatically — no copy-paste required. Detection precedence is `tmux > Ghostty > iTerm2 > none`:
+
+- **Inside tmux** — `tmux split-window -h -c <workspace>` opens a vertical split running the observer.
+- **Inside Ghostty on macOS** (1.4.0+) — opens a new Ghostty window via AppleScript and feeds the observer command into it. Always opens a new window because Ghostty 1.3's terminal object exposes no `tty` property to target the calling session reliably.
+- **Inside iTerm2 on macOS** (1.4.0+) — discovers the calling shell's tty by walking the process ancestry and splits *that* session vertically (`split vertically with default profile`). When no matching session is found (different window, sandboxed shell, etc.), opens a new iTerm2 window instead of splitting an unrelated front window.
+- **First run on macOS** triggers the standard Automation permission prompt (System Settings → Privacy & Security → Automation). The plugin recognises the permission-denied error and prints a one-line "grant access and retry" hint instead of the generic copy-paste fallback.
+- **Outside any supported terminal** — the slash command prints the exact `node /path/to/companion.mjs observe …` invocation for you to paste into a separate terminal yourself.
 
 Examples:
 
