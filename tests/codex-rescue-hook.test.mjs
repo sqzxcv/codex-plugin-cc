@@ -50,7 +50,7 @@ test("codex-rescue hook injects a complete line when the completion token is pre
   });
 });
 
-test("codex-rescue hook defaults synchronous tokenless returns to complete", () => {
+test("codex-rescue hook reports synchronous tokenless returns neutrally", () => {
   const result = runHook({
     hook_event_name: "PostToolUse",
     tool_name: "Agent",
@@ -72,7 +72,60 @@ test("codex-rescue hook defaults synchronous tokenless returns to complete", () 
   const payload = parseHookOutput(result);
   assert.equal(
     payload.hookSpecificOutput.additionalContext,
-    "codex-rescue has COMPLETED and exited. The text above is the final result. Do NOT wait for a notification or poll status. If it ran with --write, verify changed files with git status."
+    "codex-rescue has exited (synchronous return — it is not running). Treat the text above as its result and verify on disk (`git status` if it ran with --write); do not wait for a notification or poll status."
+  );
+  assert.doesNotMatch(payload.hookSpecificOutput.additionalContext, /final result/);
+});
+
+test("codex-rescue hook reports failed tokenless returns without a success signal", () => {
+  const result = runHook({
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    tool_input: {
+      subagent_type: "codex:codex-rescue"
+    },
+    tool_response: {
+      status: "failed",
+      agentId: "agent-failed",
+      content: [
+        {
+          type: "text",
+          text: "Codex could not be invoked.\n"
+        }
+      ]
+    }
+  });
+
+  const payload = parseHookOutput(result);
+  assert.equal(
+    payload.hookSpecificOutput.additionalContext,
+    "codex-rescue exited WITHOUT a success signal — it is not running, so do not wait for a notification, but the run may have failed or produced no result. Review the output above and `git status`, then re-run or escalate instead of treating it as done."
+  );
+});
+
+test("codex-rescue hook reports empty tokenless returns without a success signal", () => {
+  const result = runHook({
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    tool_input: {
+      subagent_type: "codex:codex-rescue"
+    },
+    tool_response: {
+      status: "completed",
+      agentId: "agent-empty",
+      content: [
+        {
+          type: "text",
+          text: ""
+        }
+      ]
+    }
+  });
+
+  const payload = parseHookOutput(result);
+  assert.equal(
+    payload.hookSpecificOutput.additionalContext,
+    "codex-rescue exited WITHOUT a success signal — it is not running, so do not wait for a notification, but the run may have failed or produced no result. Review the output above and `git status`, then re-run or escalate instead of treating it as done."
   );
 });
 

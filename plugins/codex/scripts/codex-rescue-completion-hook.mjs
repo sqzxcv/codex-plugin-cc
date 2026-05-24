@@ -7,6 +7,14 @@ import { parseTaskStatusToken } from "./lib/task-status-token.mjs";
 
 const COMPLETE_CONTEXT =
   "codex-rescue has COMPLETED and exited. The text above is the final result. Do NOT wait for a notification or poll status. If it ran with --write, verify changed files with git status.";
+const NEUTRAL_EXIT_CONTEXT =
+  "codex-rescue has exited (synchronous return — it is not running). Treat the text above as its result and verify on disk (`git status` if it ran with --write); do not wait for a notification or poll status.";
+const FAILURE_CONTEXT =
+  "codex-rescue exited WITHOUT a success signal — it is not running, so do not wait for a notification, but the run may have failed or produced no result. Review the output above and `git status`, then re-run or escalate instead of treating it as done.";
+// Known non-success statuses. Without the complete sentinel, one of these (or
+// an empty body) means there is no success signal, so we must not claim the
+// run succeeded (PR #346 review P1).
+const FAILURE_STATUSES = new Set(["failed", "fail", "error", "errored", "cancelled", "canceled", "timed_out", "timeout", "aborted"]);
 const BASH_AUTO_BACKGROUND_MARKER = "Command running in background with ID:";
 const BASH_AUTO_BACKGROUND_OUTPUT_PREFIX = "Output is being written to:";
 
@@ -76,6 +84,16 @@ function isSynchronousAgentReturn(toolResponse) {
   return status !== "async_launched" && status !== "running";
 }
 
+function isFailedOrEmptyReturn(toolResponse, responseText) {
+  // codex-rescue returns nothing when Codex can't be invoked; an empty body or
+  // a known failure status means there is no success signal to report.
+  if (String(responseText ?? "").trim() === "") {
+    return true;
+  }
+  const status = String(toolResponse?.status ?? "").toLowerCase();
+  return FAILURE_STATUSES.has(status);
+}
+
 function collectText(value) {
   if (value == null) {
     return "";
@@ -119,20 +137,28 @@ function buildCompletionContext(input) {
   if (token?.status === "dispatched" && token.id) {
     return buildDispatchedContext(token.id);
   }
+  // The complete sentinel is the only positive proof of a successful run; the
+  // companion stamps it solely on real completion, so it is the lone path that
+  // asserts success (PR #346 review P1).
   if (token?.status === "complete") {
     return COMPLETE_CONTEXT;
   }
 
-  // Bash auto-backgrounds commands that exceed the 600s foreground cap. That
+  // Bash auto-backgrounds commands that exceed the ~600s foreground cap. That
   // synchronous Agent return means the Bash wrapper detached, not that Codex
-  // completed, so report the still-running state before tokenless completion.
+  // completed, so report the still-running state before any completion claim.
   if (responseText.includes(BASH_AUTO_BACKGROUND_MARKER)) {
     return buildBashAutoBackgroundContext(extractBashAutoBackgroundOutputPath(responseText));
   }
 
-  // Token absence still means completion here because PostToolUse fires only
-  // after a synchronous Agent tool call has returned to the parent thread.
-  return COMPLETE_CONTEXT;
+  // No success evidence: never claim success here. A failure status or an empty
+  // return gets a failure-aware line; everything else gets a neutral "exited,
+  // verify on disk" line. Every branch still says "do not wait" because a
+  // synchronous Agent return means the agent has exited.
+  if (isFailedOrEmptyReturn(toolResponse, responseText)) {
+    return FAILURE_CONTEXT;
+  }
+  return NEUTRAL_EXIT_CONTEXT;
 }
 
 function main() {
