@@ -104,42 +104,28 @@ export function osascriptArgsFromLines(lines) {
   return lines.flatMap((line) => ["-e", line]);
 }
 
-export function buildGhosttyMacArgs({ composed, callerTty }) {
+export function buildGhosttyMacArgs({ composed, callerTty: _callerTty }) {
+  // Ghostty 1.3's terminal object exposes id/name/working directory only —
+  // there is no `tty` property. Until upstream adds one, always open a new
+  // window. `new window` returns a window, so we drill down to a terminal
+  // before calling `input text`.
   const literal = escapeAppleScriptLiteral(composed);
   const lines = [
     'tell application "Ghostty"',
-    "activate"
-  ];
-
-  if (callerTty) {
-    lines.push(
-      `set targetTty to "${escapeAppleScriptLiteral(callerTty)}"`,
-      "set matched to missing value",
-      "repeat with t in terminals",
-      "if tty of t is targetTty then",
-      "set matched to t",
-      "exit repeat",
-      "end if",
-      "end repeat",
-      "if matched is not missing value then",
-      "set newTerm to split matched direction right",
-      "else",
-      "set newTerm to new window",
-      "end if"
-    );
-  } else {
-    lines.push("set newTerm to new window");
-  }
-
-  lines.push(
+    "activate",
+    "set newWin to new window",
+    "set newTerm to terminal 1 of selected tab of newWin",
     `input text "${literal}\\n" to newTerm`,
     "end tell"
-  );
+  ];
 
   return osascriptArgsFromLines(lines);
 }
 
 export function buildIterm2MacArgs({ composed, callerTty }) {
+  // iTerm2 object model: window -> tabs -> sessions. `sessions` is NOT an
+  // element of `window`; it lives on `tab`. Traversal must nest through
+  // tabs to find a session whose `tty` matches the caller.
   const literal = escapeAppleScriptLiteral(composed);
   const lines = [
     'tell application "iTerm"',
@@ -151,11 +137,14 @@ export function buildIterm2MacArgs({ composed, callerTty }) {
       `set targetTty to "${escapeAppleScriptLiteral(callerTty)}"`,
       "set matched to missing value",
       "repeat with w in windows",
-      "repeat with s in sessions of w",
+      "repeat with tb in tabs of w",
+      "repeat with s in sessions of tb",
       "if tty of s is targetTty then",
       "set matched to s",
       "exit repeat",
       "end if",
+      "end repeat",
+      "if matched is not missing value then exit repeat",
       "end repeat",
       "if matched is not missing value then exit repeat",
       "end repeat",

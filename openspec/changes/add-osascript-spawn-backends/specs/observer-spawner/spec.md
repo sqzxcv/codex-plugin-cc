@@ -51,13 +51,13 @@ The spawner SHALL select the backend matching the detected kind and invoke it th
 
 - **WHEN** kind is `ghostty-mac`
 - **THEN** the runner is invoked with `cmd === 'osascript'`
-- **AND** `args` is a sequence of `-e <line>` pairs whose concatenated script contains `tell application "Ghostty"`, a `repeat with` loop that compares `tty of` each open terminal to the caller-tty argument, a `split <matched-term> direction right` branch when a match is found, a `new window` branch when no match is found, and an `input text` call carrying the supplied command
+- **AND** `args` is a sequence of `-e <line>` pairs whose concatenated script contains `tell application "Ghostty"`, `set newWin to new window`, `set newTerm to terminal 1 of selected tab of newWin` (because Ghostty's `new window` returns a window — `input text` requires a terminal), and an `input text "..." to newTerm` call carrying the supplied command. The script MUST NOT reference `tty of <terminal>` (Ghostty 1.3's terminal object exposes `id`, `name`, `working directory` only — no `tty` property; tty-targeted split is deferred until upstream adds it).
 
 #### Scenario: iterm2-mac backend calls osascript
 
 - **WHEN** kind is `iterm2-mac`
 - **THEN** the runner is invoked with `cmd === 'osascript'`
-- **AND** `args` is a sequence of `-e <line>` pairs whose concatenated script contains `tell application "iTerm"`, a `repeat` loop that compares `tty of` each session in each window to the caller-tty argument, a `split vertically` branch when a match is found, a `create window with default profile` branch when no match is found, and a `write text` call carrying the supplied command
+- **AND** `args` is a sequence of `-e <line>` pairs whose concatenated script contains `tell application "iTerm"`, a nested `repeat with w in windows` / `repeat with tb in tabs of w` / `repeat with s in sessions of tb` traversal (iTerm2's object model is window → tabs → sessions; `sessions` is NOT a direct element of `window`) comparing `tty of s` to the caller-tty argument, a `split vertically with default profile` branch when a match is found, a `create window with default profile` plus `current session of newWindow` branch when no match is found, and a `write text` call carrying the supplied command
 
 ### Requirement: Spawn success reporting
 
@@ -152,29 +152,33 @@ The control-character guard (separate requirement below) runs *between* Layers 1
 - **WHEN** the spawner builds an osascript backend's argv
 - **THEN** the input to `escapeAppleScriptLiteral` is exactly the output of `composeShellInvocation` — there is no path that escapes raw `cwd` or raw `command` for AppleScript before shell composition has produced the final invocation
 
-### Requirement: Caller-terminal targeting with new-window fallback
+### Requirement: Caller-terminal targeting with new-window fallback (iterm2-mac only)
 
-The osascript backends SHALL discover the caller shell's controlling tty (walking the process ancestry until an ancestor with a real tty is found) and pass that path into the AppleScript. The AppleScript SHALL iterate all open terminals/sessions in the target app and split the one whose `tty` matches; when no match is found OR tty discovery itself fails, the script SHALL open a brand-new window for the observer. It MUST NOT silently split an unrelated front window.
+The `iterm2-mac` backend SHALL discover the caller shell's controlling tty (walking the process ancestry until an ancestor with a real tty is found) and pass that path into the AppleScript. The AppleScript SHALL iterate `windows -> tabs -> sessions` and split the session whose `tty` matches; when no match is found OR tty discovery itself fails, the script SHALL open a brand-new window for the observer. It MUST NOT silently split an unrelated front window.
 
-#### Scenario: caller tty matches an open Ghostty terminal
+The `ghostty-mac` backend is exempt from caller-tty targeting because Ghostty 1.3's `terminal` object exposes no `tty` property; this backend always uses the new-window path. When upstream Ghostty adds a `tty` property, this exemption SHALL be revisited.
 
-- **WHEN** the caller-tty argument equals the `tty` of one of Ghostty's open terminals
-- **THEN** the AppleScript splits *that* terminal (direction right) and runs the command in the new pane
+The `tmux` backend uses tmux's own client-context split (`split-window -h -c <cwd>`) and is also exempt.
 
 #### Scenario: caller tty matches an open iTerm2 session
 
 - **WHEN** the caller-tty argument equals the `tty` of one of iTerm2's open sessions
 - **THEN** the AppleScript splits *that* session vertically and runs the command in the new session
 
-#### Scenario: no matching terminal found
+#### Scenario: no matching iTerm2 session found
 
-- **WHEN** no open terminal/session has a `tty` matching the caller-tty argument
-- **THEN** the AppleScript opens a new window in the target app (NOT a split of the front window), sets its working directory, and runs the command
+- **WHEN** no open iTerm2 session has a `tty` matching the caller-tty argument
+- **THEN** the AppleScript opens a new iTerm2 window via `create window with default profile` (NOT a split of the front window), assigns `current session of newWindow`, and writes the command into that session
 
-#### Scenario: caller tty cannot be discovered
+#### Scenario: caller tty cannot be discovered (iTerm2)
 
 - **WHEN** process-ancestry discovery returns no tty (e.g., sandboxed shell, `ps` unavailable)
-- **THEN** the spawner builds AppleScript that goes directly to the new-window branch with no split attempt
+- **THEN** the spawner builds iTerm2 AppleScript that goes directly to the `create window` branch with no split attempt and no `repeat` loop
+
+#### Scenario: Ghostty always uses new-window path
+
+- **WHEN** the kind is `ghostty-mac`, regardless of whether tty discovery succeeded
+- **THEN** the AppleScript always executes `set newWin to new window` followed by `set newTerm to terminal 1 of selected tab of newWin`, then `input text` to that terminal — the script does not embed the caller tty and does not contain a `repeat with` loop
 
 ### Requirement: Reject control characters in the composed shell invocation (osascript backends only)
 

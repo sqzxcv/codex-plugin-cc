@@ -31,7 +31,7 @@ A first-pass version of this document was reviewed adversarially by Codex (verdi
 Each backend is a small record `{ detect, build, cmd, classifyFailure }`. `detectTerminal(env)` walks the table in priority order and returns the first hit. `spawnObserverInTerminal({ cwd, command, env, runner })` then drives a per-kind pipeline:
 
 - **tmux backend** — receives `build({ cwd, command })`. No shell composition (tmux takes `-c <cwd>` as a separate `execve` arg and the command as another arg, so there is no shell-injection vector). Runner invoked with `{ stdio: 'ignore' }`. `classifyFailure` returns only generic errors.
-- **osascript backends (`ghostty-mac`, `iterm2-mac`)** — dispatcher first calls `composed = composeShellInvocation({ cwd, command })`, then `rejectControlChars(composed)` (early-return `unsafe-command` on hit), then `callerTty = discoverCallerTty()`. The builder receives `{ composed, callerTty }` — never raw `cwd`/`command` — so composition cannot drift between dispatcher and backend. Runner invoked with `{ stdio: ['ignore', 'ignore', 'pipe'] }` so stderr is captured for `classifyFailure`, which can return `automation-permission-denied` in addition to generic errors.
+- **osascript backends (`ghostty-mac`, `iterm2-mac`)** — dispatcher first calls `composed = composeShellInvocation({ cwd, command })`, then `rejectControlChars(composed)` (early-return `unsafe-command` on hit), then `callerTty = discoverCallerTty()`. The builder receives `{ composed, callerTty }` — never raw `cwd`/`command` — so composition cannot drift between dispatcher and backend. The Ghostty builder ignores `callerTty` (see Decision 7 — Ghostty 1.3's terminal has no `tty` property); the iTerm2 builder uses it to choose between the match-and-split path and the new-window path. Runner invoked with `{ stdio: ['ignore', 'ignore', 'pipe'] }` so stderr is captured for `classifyFailure`, which can return `automation-permission-denied` in addition to generic errors.
 
 Both branches share the same outer success/failure return shape (`{ spawned, kind, reason?, error? }`).
 
@@ -88,21 +88,21 @@ Easier to log (`runner` calls show each line), easier to compare in tests (`asse
 
 For non-permission failures the existing tmux shape stays: if the runner returns non-zero status or throws, the spawner returns `{ spawned: false, kind: <backend>, error: <message> }`, and `handleObserveSpawn` prints the red "Failed to drive <kind>" line followed by the existing fallback hint. Users always get a working path out. The two carve-outs below (Decision 7 target-window + Decision 8 permission-denied) take precedence when they apply.
 
-### 7. Target the calling shell's terminal; fall back to a new window, not the front one
+### 7. Target the calling shell's terminal (iTerm2 only); fall back to a new window, not the front one
 
 **Problem (from Codex review).** `/codex:observe` may be invoked from a Claude Code session running in a *different* window than the currently frontmost Ghostty / iTerm2 window. Naively running `tell application "Ghostty" to split focused terminal of front window …` then drops the observer into an unrelated project's terminal — wrong cwd, wrong context, confusing.
 
-**Strategy.** Two-step:
+**Strategy.** Per-backend, because the two AppleScript dictionaries differ in what they expose:
 
-1. **Discover the caller's tty.** The companion script walks up the process tree (`ps -o tty=,ppid= -p <pid>` repeatedly) until it finds the first ancestor with a real controlling tty (not `?` / `??`), and resolves that to `/dev/ttysNN`. This catches the common case where Claude Code spawns `bash` which spawns `node` — none of them own a tty, but the user's shell ancestor does.
+1. **Discover the caller's tty.** The companion script walks up the process tree (`ps -o tty=,ppid= -p <pid>` repeatedly) until it finds the first ancestor with a real controlling tty (not `?` / `??`), and resolves that to `/dev/ttysNN`. This catches the common case where Claude Code spawns `bash` which spawns `node` — none of them own a tty, but the user's shell ancestor does. The walk is depth-capped at 10 ancestors and times out per-probe, so a stuck `ps` cannot block the spawner.
 
-2. **Targeted AppleScript.** The script is parameterised with the discovered tty. It iterates all open terminals/sessions in the target app (`repeat with t in terminals` for Ghostty, `repeat with w in windows / s in sessions` for iTerm2), comparing each one's `tty` property to the discovered value. On match: `split t direction right` (Ghostty) or `split <session> vertically` (iTerm2). On no match: open a brand-new window via `new window` / `create window with default profile`, set its cwd, and run the command there.
+2. **iTerm2-targeted AppleScript.** The script is parameterised with the discovered tty. iTerm2's object model is `application → windows → tabs → sessions`; `sessions` is **NOT** a direct element of `window`, it lives on `tab`. The traversal therefore nests: `repeat with w in windows` → `repeat with tb in tabs of w` → `repeat with s in sessions of tb`, comparing `tty of s` to the discovered value. On match: `tell matched … set newSession to split vertically with default profile`. On no match: `set newWindow to create window with default profile` → `set newSession to current session of newWindow`.
+
+3. **Ghostty: always new-window.** Ghostty 1.3's AppleScript dictionary lists per-terminal properties as `id`, `name`, `working directory` only — there is **no `tty` property** on the terminal object. Without `tty`, no reliable identity check is possible (matching by name/id would silently re-target on rename), so the Ghostty backend always opens a fresh window: `set newWin to new window` → `set newTerm to terminal 1 of selected tab of newWin` → `input text "<cmd>\n" to newTerm`. The drill-down through `selected tab` is required because `new window` returns a *window* object and `input text` requires a *terminal*. When upstream Ghostty adds a `tty` property, this exemption gets revisited and Ghostty rejoins the iTerm2-style match-or-new-window flow.
 
 **Why new-window instead of "best effort split front window".** Splitting the wrong window is a silent failure with confusing output. Opening a new window is visibly different and never wrong — the observer just lives in its own window instead of next to the caller. The user can always grab it.
 
-**When tty discovery itself fails** (uncommon: detached sessions, sandboxed shells without `ps` access), the spawner skips straight to the new-window branch with no attempt to split. Same safety guarantee.
-
-**Open question — Ghostty `tty` property exposure.** The published Ghostty AppleScript dictionary documents `terminals`, `tabs`, `windows`, `selected tab`, but the spec we've reviewed doesn't enumerate per-terminal properties exhaustively. The implementer MUST verify `tty of terminal X` works on the Ghostty version pinned in §Risks; if not, the Ghostty path drops to new-window-only for this change and we file a follow-up against Ghostty.
+**When iTerm2 tty discovery itself fails** (uncommon: detached sessions, sandboxed shells without `ps` access), the spawner skips straight to the new-window branch with no `repeat` loop emitted. Same safety guarantee. Ghostty is unaffected — it never attempted matching to begin with.
 
 ### 8. Permission-denied is an onboarding state, not a failure
 
@@ -130,8 +130,9 @@ For non-permission failures the existing tmux shape stays: if the runner returns
 | `tty` discovery itself fails (sandboxed shell, no `ps` access, detached daemon) | Skip straight to the new-window branch; no attempt to split. The observer always lands in a fresh, visible window with the right cwd. |
 | Cwd contains spaces, single quotes, unicode, or shell metacharacters | Decision 3 Layer 1: `shellQuote` wraps cwd before composing `cd ... && ...`. Unit tests cover spaces, single quotes, unicode, and `;`/`$`/`` ` ``. |
 | Caller-supplied command contains embedded newline / control chars | Decision 3 Control-char guard: reject before building AppleScript, return `{ spawned: false, error: 'unsafe-command' }`, fall through to copy-paste hint. Avoids the half-formed-script failure mode. |
-| Ghostty AppleScript dictionary changes in a future release | Use only the documented stable verbs (`split`, `input text`, `activate`, `terminals`, `tty of`). Avoid `perform action "<keybind>"` (more brittle). Pin a "tested with Ghostty X.Y" note in tasks §6.5. |
-| Ghostty's `tty of terminal` property may not exist on every release | Tasks §0 spike validates the property before implementation commits to the tty-match path. If unavailable, Ghostty drops to new-window-only and we file an upstream feature request. |
+| Ghostty AppleScript dictionary changes in a future release | Use only the documented stable verbs (`new window`, `selected tab`, `terminal`, `input text`, `activate`). Avoid `perform action "<keybind>"` (more brittle). Pin a "tested with Ghostty 1.3" note in tasks §6.5. |
+| Ghostty's terminal object has no `tty` property (1.3 confirmed via Codex adversarial review + Context7) | Ghostty drops to new-window-only for this change. Decision 7 documents the reasoning; iTerm2 retains the tty-match path. Upstream feature request tracked separately; once `tty` lands, Ghostty rejoins match-or-new-window. |
+| iTerm2 object model nests sessions under tabs, not windows directly | Decision 7: traversal nests `windows → tabs of w → sessions of tb`. A spec scenario asserts `tabs of w` appears before `sessions of tb` in the script source so the contract cannot regress to the (broken) `sessions of w` shape. |
 | iTerm2 stable vs nightly dictionary differences | Test against the stable GA build. The verbs we use (`current session`, `split vertically with default profile`, `write text`, `tty of current session`) have been stable since iTerm2 3.x. |
 | `tell application "<App>" to activate` steals focus | Accept it. The new split / window needs to be visible for the spawn to be useful; stealing focus into the target app is the documented AppleScript pattern. We only activate when we are about to spawn — never on probe / detection. |
 | Job-id is interpolated into a shell+AppleScript string | Two-layer quoting (Decision 3) handles both domains. Job IDs are companion-generated (`task-[a-z0-9]+`); the quoting + control-char rejection are defense-in-depth in case that invariant ever loosens. |
@@ -141,6 +142,12 @@ For non-permission failures the existing tmux shape stays: if the runner returns
 Additive change. Tmux users see byte-identical behavior. Non-tmux macOS users on Ghostty/iTerm2 start getting auto-splits. The copy-paste fallback hint remains as the last line of defense for every other environment.
 
 Rollback: revert the spawner.mjs diff. The 1.3.0 tmux MVP is preserved in git history; reverting only this change leaves tmux working.
+
+## Resolved Questions
+
+- **Does Ghostty expose a `tty` property on the terminal object?** No (Ghostty 1.3, confirmed by Codex adversarial review + Context7 dictionary lookup). The terminal object exposes `id`, `name`, `working directory` only. Decision 7 was updated to drop the Ghostty tty-match path; Ghostty always opens a new window. Reverts when upstream adds `tty`.
+- **Does iTerm2 expose `sessions` as a direct element of `window`?** No. The object model is `windows → tabs → sessions`; the traversal must nest through `tabs of w` before `sessions of tb`. The earlier draft used `sessions of w`, which AppleScript-compiles fine but iterates an empty collection at runtime. Fixed in implementation; locked by spec scenario.
+- **Does Ghostty's `new window` return a window or a terminal?** A *window*. `input text` requires a *terminal*, so the script drills via `set newTerm to terminal 1 of selected tab of newWin` before calling `input text "…" to newTerm`.
 
 ## Open Questions
 

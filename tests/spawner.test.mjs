@@ -7,6 +7,7 @@ import {
   buildGhosttyMacArgs,
   buildIterm2MacArgs,
   composeShellInvocation,
+  discoverCallerTty,
   spawnObserverInTerminal
 } from "../plugins/codex/scripts/lib/spawner.mjs";
 
@@ -153,7 +154,7 @@ describe("spawnObserverInTerminal", () => {
     assert.equal(result.kind, "none");
   });
 
-  it("invokes Ghostty through osascript with tty-targeted split and new-window fallback branches", () => {
+  it("invokes Ghostty through osascript with new-window-only flow", () => {
     const calls = [];
     const result = spawnObserverInTerminal({
       cwd: "/p",
@@ -173,15 +174,17 @@ describe("spawnObserverInTerminal", () => {
 
     const script = scriptFromArgs(calls[0].args);
     assert.match(script, /tell application "Ghostty"/);
-    assert.match(script, /repeat with t in terminals/);
-    assert.match(script, /tty of t/);
-    assert.match(script, /\/dev\/ttys123/);
-    assert.match(script, /split matched direction right/);
-    assert.match(script, /new window/);
+    // Ghostty's terminal object has no `tty` property as of 1.3, so the
+    // implementation does not perform tty-based matching.
+    assert.doesNotMatch(script, /tty of t/);
+    assert.doesNotMatch(script, /repeat with t in terminals/);
+    // new window returns a window — input text must target a terminal.
+    assert.match(script, /set newWin to new window/);
+    assert.match(script, /set newTerm to terminal 1 of selected tab of newWin/);
     assert.match(script, /input text "cd '\/p' && 'node' 'x' 'observe'\\n" to newTerm/);
   });
 
-  it("invokes iTerm2 through osascript with tty-targeted split and new-window fallback branches", () => {
+  it("invokes iTerm2 through osascript with nested-tabs traversal and new-window fallback", () => {
     const calls = [];
     const result = spawnObserverInTerminal({
       cwd: "/p",
@@ -201,8 +204,17 @@ describe("spawnObserverInTerminal", () => {
 
     const script = scriptFromArgs(calls[0].args);
     assert.match(script, /tell application "iTerm"/);
+    // iTerm2 object model is window -> tabs -> sessions; sessions is NOT
+    // directly an element of window. The traversal must nest through tabs.
     assert.match(script, /repeat with w in windows/);
-    assert.match(script, /repeat with s in sessions of w/);
+    assert.match(script, /repeat with tb in tabs of w/);
+    assert.match(script, /repeat with s in sessions of tb/);
+    // tabs-of must appear before sessions-of in the script source so the
+    // outer loop is over tabs.
+    assert.ok(
+      script.indexOf("tabs of w") < script.indexOf("sessions of tb"),
+      "tabs of w should be iterated before sessions of tb"
+    );
     assert.match(script, /tty of s/);
     assert.match(script, /\/dev\/ttys456/);
     assert.match(script, /split vertically with default profile/);
@@ -289,7 +301,24 @@ describe("spawnObserverInTerminal", () => {
     assert.equal(result.spawned, true);
   });
 
-  it("embeds the discovered caller tty in the AppleScript comparison", () => {
+  it("embeds the discovered caller tty in the iTerm2 AppleScript comparison", () => {
+    const calls = [];
+    spawnObserverInTerminal({
+      cwd: "/p",
+      command: "'node' 'x'",
+      env: { TERM_PROGRAM: "iTerm.app" },
+      platform: "darwin",
+      discoverTty: () => "/dev/ttys999",
+      runner: (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 0 };
+      }
+    });
+
+    assert.match(scriptFromArgs(calls[0].args), /set targetTty to "\/dev\/ttys999"/);
+  });
+
+  it("Ghostty script does not embed caller tty because Ghostty has no tty property", () => {
     const calls = [];
     spawnObserverInTerminal({
       cwd: "/p",
@@ -303,15 +332,17 @@ describe("spawnObserverInTerminal", () => {
       }
     });
 
-    assert.match(scriptFromArgs(calls[0].args), /set targetTty to "\/dev\/ttys999"/);
+    const script = scriptFromArgs(calls[0].args);
+    assert.doesNotMatch(script, /\/dev\/ttys999/);
+    assert.doesNotMatch(script, /targetTty/);
   });
 
-  it("builds the new-window branch only when caller tty cannot be discovered", () => {
+  it("builds the iTerm2 new-window branch when caller tty cannot be discovered", () => {
     const calls = [];
     spawnObserverInTerminal({
       cwd: "/p",
       command: "'node' 'x'",
-      env: { TERM_PROGRAM: "ghostty" },
+      env: { TERM_PROGRAM: "iTerm.app" },
       platform: "darwin",
       discoverTty: () => null,
       runner: (cmd, args) => {
@@ -322,8 +353,9 @@ describe("spawnObserverInTerminal", () => {
 
     const script = scriptFromArgs(calls[0].args);
     assert.doesNotMatch(script, /repeat with/);
-    assert.doesNotMatch(script, /split matched/);
-    assert.match(script, /set newTerm to new window/);
+    assert.doesNotMatch(script, /split vertically/);
+    assert.match(script, /create window with default profile/);
+    assert.match(script, /set newSession to current session of newWindow/);
   });
 
   it("classifies osascript error number -1743 as automation-permission-denied", () => {
@@ -420,6 +452,89 @@ describe("composeShellInvocation", () => {
     const script = scriptFromArgs(buildGhosttyMacArgs({ composed, callerTty: null }));
 
     assert.match(script, /input text "cd '\/tmp\/project' && 'node' 'say \\"hi\\" and C:\\\\tmp'\\n"/);
+  });
+});
+
+describe("discoverCallerTty", () => {
+  it("returns the tty of the immediate parent when ps yields a real device", () => {
+    const calls = [];
+    const runProbe = (cmd, args) => {
+      calls.push({ cmd, args });
+      return "ttys004 4242\n";
+    };
+    const tty = discoverCallerTty({ startPid: 9999, runProbe });
+    assert.equal(tty, "/dev/ttys004");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ["-o", "tty=,ppid=", "-p", "9999"]);
+  });
+
+  it("walks past a `??` ancestor to find a real tty further up", () => {
+    const responses = new Map([
+      ["100", "?? 50\n"],
+      ["50", "ttys010 1\n"]
+    ]);
+    const seen = [];
+    const runProbe = (_cmd, args) => {
+      const pid = args[args.length - 1];
+      seen.push(pid);
+      const out = responses.get(pid);
+      if (!out) {
+        throw new Error(`unexpected probe pid=${pid}`);
+      }
+      return out;
+    };
+    const tty = discoverCallerTty({ startPid: 100, runProbe });
+    assert.equal(tty, "/dev/ttys010");
+    assert.deepEqual(seen, ["100", "50"]);
+  });
+
+  it("returns the tty unchanged when ps already includes the /dev/ prefix", () => {
+    const runProbe = () => "/dev/ttys020 4242\n";
+    assert.equal(
+      discoverCallerTty({ startPid: 9999, runProbe }),
+      "/dev/ttys020"
+    );
+  });
+
+  it("returns null when ancestry hits ppid <= 1 without a real tty", () => {
+    const responses = new Map([
+      ["123", "?? 1\n"]
+    ]);
+    const runProbe = (_cmd, args) => responses.get(args[args.length - 1]);
+    assert.equal(discoverCallerTty({ startPid: 123, runProbe }), null);
+  });
+
+  it("returns null when runProbe throws", () => {
+    const runProbe = () => {
+      throw new Error("ps not available");
+    };
+    assert.equal(discoverCallerTty({ startPid: 9999, runProbe }), null);
+  });
+
+  it("returns null when ps output is empty or malformed", () => {
+    assert.equal(discoverCallerTty({ startPid: 9999, runProbe: () => "" }), null);
+    assert.equal(discoverCallerTty({ startPid: 9999, runProbe: () => "garbage\n" }), null);
+  });
+
+  it("caps walk depth at 10 ancestors and returns null on overrun", () => {
+    let probes = 0;
+    const runProbe = () => {
+      probes += 1;
+      // Each level reports `??` and bumps to a fresh nonzero ppid, forcing
+      // the loop to exhaust its depth budget.
+      return `?? ${100 + probes}\n`;
+    };
+    assert.equal(discoverCallerTty({ startPid: 1000, runProbe }), null);
+    assert.equal(probes, 10);
+  });
+
+  it("returns null when startPid is invalid", () => {
+    const runProbe = () => {
+      throw new Error("should not be called");
+    };
+    assert.equal(discoverCallerTty({ startPid: 0, runProbe }), null);
+    assert.equal(discoverCallerTty({ startPid: 1, runProbe }), null);
+    assert.equal(discoverCallerTty({ startPid: null, runProbe }), null);
   });
 });
 
