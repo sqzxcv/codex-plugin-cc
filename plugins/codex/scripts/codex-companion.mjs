@@ -558,7 +558,8 @@ function renderQueuedTaskLaunch(payload) {
   return [
     statusToken,
     `${payload.title} dispatched as background job ${payload.jobId}.`,
-    `No automatic notification will arrive; poll /codex:status ${payload.jobId}.`
+    `No automatic notification will arrive; poll /codex:status ${payload.jobId}.`,
+    `To be notified on completion, run with the Bash tool (run_in_background): node "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status ${payload.jobId} --wait --timeout-ms 1800000  (re-arm it if it returns still-running).`
   ].join("\n") + "\n";
 }
 

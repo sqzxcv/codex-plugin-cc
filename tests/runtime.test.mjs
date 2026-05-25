@@ -903,6 +903,12 @@ test("task --background emits a dispatched token without promising notification"
   const jobId = launched.stdout.match(/id=(task-[^\]\s]+)/)?.[1];
   assert.ok(jobId, "expected dispatched token to include a task job id");
   assert.match(launched.stdout, new RegExp(`No automatic notification will arrive; poll /codex:status ${jobId}\\.`));
+  assert.match(
+    launched.stdout,
+    new RegExp(
+      `To be notified on completion, run with the Bash tool \\(run_in_background\\): node "\\$\\{CLAUDE_PLUGIN_ROOT\\}/scripts/codex-companion\\.mjs" status ${jobId} --wait --timeout-ms 1800000  \\(re-arm it if it returns still-running\\)\\.`
+    )
+  );
   assert.doesNotMatch(launched.stdout, /will notify|will be notified|you will be notified/i);
 });
 

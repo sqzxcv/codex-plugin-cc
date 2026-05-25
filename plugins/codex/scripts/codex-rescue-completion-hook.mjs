@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
 
+import { loadState } from "./lib/state.mjs";
 import { parseTaskStatusToken } from "./lib/task-status-token.mjs";
 
+const COMPANION_SCRIPT_PATH = fileURLToPath(new URL("./codex-companion.mjs", import.meta.url));
 const COMPLETE_CONTEXT =
   "codex-rescue has COMPLETED and exited. The text above is the final result. Do NOT wait for a notification or poll status. If it ran with --write, verify changed files with git status.";
 const NEUTRAL_EXIT_CONTEXT =
@@ -15,8 +18,13 @@ const FAILURE_CONTEXT =
 // an empty body) means there is no success signal, so we must not claim the
 // run succeeded (PR #346 review P1).
 const FAILURE_STATUSES = new Set(["failed", "fail", "error", "errored", "cancelled", "canceled", "timed_out", "timeout", "aborted"]);
+const ACTIVE_TASK_STATUSES = new Set(["queued", "running"]);
 const BASH_AUTO_BACKGROUND_MARKER = "Command running in background with ID:";
 const BASH_AUTO_BACKGROUND_OUTPUT_PREFIX = "Output is being written to:";
+
+function buildWatcherContext(jobId) {
+  return `codex-rescue background job ${jobId} is RUNNING — there is no automatic push notification. To be notified, arm a watcher: run this via the Bash tool with run_in_background=true:  node ${COMPANION_SCRIPT_PATH} status ${jobId} --wait --timeout-ms 1800000  — it blocks until the job is terminal, then exits and re-invokes you. If it returns and the job is still running, re-arm the same command. Do NOT treat the job as done until the watcher reports a terminal status.`;
+}
 
 function buildDispatchedContext(jobId) {
   return `codex-rescue dispatched background job ${jobId}. No automatic notification will arrive; poll /codex:status ${jobId}.`;
@@ -84,6 +92,23 @@ function isSynchronousAgentReturn(toolResponse) {
   return status !== "async_launched" && status !== "running";
 }
 
+function getHookCwd(input) {
+  const cwd = input?.cwd;
+  return typeof cwd === "string" && cwd.trim() ? cwd : process.cwd();
+}
+
+function compareJobsNewestFirst(left, right) {
+  return String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? ""));
+}
+
+function findNewestActiveTaskJob(cwd) {
+  return (
+    [...loadState(cwd).jobs]
+      .filter((job) => job?.jobClass === "task" && ACTIVE_TASK_STATUSES.has(String(job.status ?? "")))
+      .sort(compareJobsNewestFirst)[0] ?? null
+  );
+}
+
 function isFailedOrEmptyReturn(toolResponse, responseText) {
   // codex-rescue returns nothing when Codex can't be invoked; an empty body or
   // a known failure status means there is no success signal to report.
@@ -130,6 +155,13 @@ function buildCompletionContext(input) {
   const toolResponse = input?.tool_response;
   if (!isSynchronousAgentReturn(toolResponse)) {
     return null;
+  }
+
+  // The subagent may paraphrase or drop the dispatched sentinel, so companion
+  // state is the reliable signal for a queued/running rescue task after return.
+  const activeTaskJob = findNewestActiveTaskJob(getHookCwd(input));
+  if (activeTaskJob) {
+    return buildWatcherContext(activeTaskJob.id);
   }
 
   const responseText = collectText(toolResponse);

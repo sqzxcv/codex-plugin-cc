@@ -3,14 +3,46 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { run } from "./helpers.mjs";
+import { makeTempDir, run } from "./helpers.mjs";
+import { saveState } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = path.join(ROOT, "plugins", "codex", "scripts", "codex-rescue-completion-hook.mjs");
+const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
 
-function runHook(input) {
+function withPluginData(pluginDataDir, callback) {
+  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+  try {
+    return callback();
+  } finally {
+    if (previousPluginDataDir == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
+    }
+  }
+}
+
+function seedHookState(cwd, pluginDataDir, jobs) {
+  withPluginData(pluginDataDir, () =>
+    saveState(cwd, {
+      version: 1,
+      config: { stopReviewGate: false },
+      jobs
+    })
+  );
+}
+
+function runHook(input, options = {}) {
+  const pluginDataDir = options.pluginDataDir ?? makeTempDir();
   return run("node", [HOOK], {
     cwd: ROOT,
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
     input: JSON.stringify(input)
   });
 }
@@ -20,6 +52,65 @@ function parseHookOutput(result) {
   assert.ok(result.stdout.trim(), "expected hook to emit JSON");
   return JSON.parse(result.stdout);
 }
+
+test("codex-rescue hook emits a watcher when companion state has an active task job", () => {
+  const workspace = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  seedHookState(workspace, pluginDataDir, [
+    {
+      id: "task-queued-old",
+      status: "queued",
+      title: "Codex Task",
+      jobClass: "task",
+      updatedAt: "2026-05-25T10:00:00.000Z"
+    },
+    {
+      id: "review-running-newer",
+      status: "running",
+      title: "Codex Review",
+      jobClass: "review",
+      updatedAt: "2026-05-25T10:10:00.000Z"
+    },
+    {
+      id: "task-running-new",
+      status: "running",
+      title: "Codex Task",
+      jobClass: "task",
+      updatedAt: "2026-05-25T10:05:00.000Z"
+    }
+  ]);
+
+  const result = runHook(
+    {
+      hook_event_name: "PostToolUse",
+      tool_name: "Agent",
+      cwd: workspace,
+      tool_input: {
+        subagent_type: "codex:codex-rescue"
+      },
+      tool_response: {
+        status: "completed",
+        agentId: "agent-paraphrased-dispatch",
+        content: [
+          {
+            type: "text",
+            text: "Codex is running in background (ID task-running-new)."
+          }
+        ]
+      }
+    },
+    { pluginDataDir }
+  );
+
+  const payload = parseHookOutput(result);
+  assert.deepEqual(payload, {
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext:
+        `codex-rescue background job task-running-new is RUNNING — there is no automatic push notification. To be notified, arm a watcher: run this via the Bash tool with run_in_background=true:  node ${COMPANION} status task-running-new --wait --timeout-ms 1800000  — it blocks until the job is terminal, then exits and re-invokes you. If it returns and the job is still running, re-arm the same command. Do NOT treat the job as done until the watcher reports a terminal status.`
+    }
+  });
+});
 
 test("codex-rescue hook injects a complete line when the completion token is present", () => {
   const result = runHook({

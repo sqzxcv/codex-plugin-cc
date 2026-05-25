@@ -110,7 +110,8 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /Start a new Codex thread/);
   assert.match(rescue, /pass `--background` to the `codex:codex-rescue` subagent/i);
   assert.match(rescue, /For long, substantial, or open-ended rescues, pass `--background`/i);
-  assert.match(rescue, /`\/codex:status <jobId>`/);
+  assert.match(rescue, /status <jobId> --wait --timeout-ms 1800000/);
+  assert.match(rescue, /run_in_background=true/);
   assert.match(rescue, /`\/codex:result <jobId>`/);
   assert.match(rescue, /Foreground stays for short, bounded rescues/i);
   assert.match(rescue, /foreground rescue is capped by the Bash tool/i);
@@ -129,7 +130,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /Do not paraphrase, summarize, rewrite, or add commentary before or after it/i);
   assert.match(rescue, /\[\[codex-task status=complete\]\]/);
   assert.match(rescue, /\[\[codex-task status=dispatched id=<jobId>\]\]/);
-  assert.match(rescue, /Trust this sentinel and the PostToolUse hook over any prose/i);
+  assert.match(rescue, /Trust this sentinel, companion state, and the PostToolUse hook over any prose/i);
   assert.match(rescue, /return that command's stdout as-is/i);
   assert.match(rescue, /Leave `--resume` and `--fresh` in the forwarded request/i);
   assert.match(agent, /--resume/);
@@ -198,7 +199,9 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
   assert.match(resultHandling, /do not turn a failed or incomplete Codex run into a Claude-side implementation attempt/i);
   assert.match(resultHandling, /if Codex was never successfully invoked, do not generate a substitute answer at all/i);
   assert.match(resultHandling, /\[\[codex-task status=complete\]\]/);
-  assert.match(resultHandling, /No automatic notification will arrive; poll `\/codex:status <jobId>`/);
+  assert.match(resultHandling, /No automatic push notification will arrive/i);
+  assert.match(resultHandling, /status <jobId> --wait --timeout-ms 1800000/);
+  assert.match(resultHandling, /run_in_background=true/);
 });
 
 test("internal docs use task terminology for rescue runs", () => {
