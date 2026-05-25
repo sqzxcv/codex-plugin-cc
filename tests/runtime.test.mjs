@@ -28,6 +28,74 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
+function runAsync(command, args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status, signal) => {
+      resolve({ status: status ?? 0, signal, stdout, stderr });
+    });
+  });
+}
+
+function writeTrackedJob(workspace, jobPatch, storedPatch = {}) {
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+  const timestamp = "2026-03-24T20:00:00.000Z";
+  const job = {
+    id: jobPatch.id,
+    kind: "task",
+    kindLabel: "rescue",
+    status: "completed",
+    title: "Codex Task",
+    jobClass: "task",
+    summary: "Test task",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    ...jobPatch
+  };
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        config: { stopReviewGate: false },
+        jobs: [job]
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(jobsDir, `${job.id}.json`),
+    `${JSON.stringify(
+      {
+        ...job,
+        ...storedPatch
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+  return job;
+}
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -831,6 +899,141 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.equal(resultPayload.job.id, launchPayload.jobId);
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
+});
+
+test("await prints a completed job result", () => {
+  const workspace = makeTempDir();
+  writeTrackedJob(
+    workspace,
+    {
+      id: "task-complete",
+      status: "completed",
+      threadId: "thr_done"
+    },
+    {
+      result: {
+        status: 0,
+        rawOutput: "Completed from stored result."
+      }
+    }
+  );
+
+  const result = run("node", [SCRIPT, "await", "task-complete"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Completed from stored result\./);
+  assert.match(result.stdout, /Codex session ID: thr_done/);
+});
+
+test("await prints a failed job result and exits non-zero", () => {
+  const workspace = makeTempDir();
+  writeTrackedJob(
+    workspace,
+    {
+      id: "task-failed",
+      status: "failed",
+      threadId: "thr_failed"
+    },
+    {
+      result: {
+        status: 1,
+        rawOutput: "Failure details from Codex."
+      }
+    }
+  );
+
+  const result = run("node", [SCRIPT, "await", "task-failed"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Failure details from Codex\./);
+  assert.match(result.stdout, /Codex session ID: thr_failed/);
+});
+
+test("await waits for a running job to complete before printing the result", async () => {
+  const workspace = makeTempDir();
+  writeTrackedJob(workspace, {
+    id: "task-running",
+    status: "running",
+    threadId: "thr_running",
+    startedAt: "2026-03-24T20:00:00.000Z"
+  });
+
+  const awaited = runAsync("node", [SCRIPT, "await", "task-running", "--timeout-ms", "5000", "--poll-interval-ms", "100"], {
+    cwd: workspace
+  });
+
+  setTimeout(() => {
+    writeTrackedJob(
+      workspace,
+      {
+        id: "task-running",
+        status: "completed",
+        threadId: "thr_running",
+        completedAt: "2026-03-24T20:00:01.000Z"
+      },
+      {
+        result: {
+          status: 0,
+          rawOutput: "Finished after polling."
+        }
+      }
+    );
+  }, 200);
+
+  const result = await awaited;
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Finished after polling\./);
+});
+
+test("await times out with the current status and exit 124", () => {
+  const workspace = makeTempDir();
+  writeTrackedJob(workspace, {
+    id: "task-timeout",
+    status: "running",
+    threadId: "thr_timeout",
+    startedAt: "2026-03-24T20:00:00.000Z"
+  });
+
+  const result = run("node", [SCRIPT, "await", "task-timeout", "--timeout-ms", "1", "--poll-interval-ms", "100", "--json"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 124);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-timeout");
+  assert.equal(payload.job.status, "running");
+  assert.equal(payload.waitTimedOut, true);
+  assert.equal(payload.timeoutMs, 1);
+});
+
+test("task --background --await prints the final result and exits with worker status", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run(
+    "node",
+    [SCRIPT, "task", "--background", "--await", "--poll-interval-ms", "100", "investigate the failing test"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n\nCodex session ID: thr_1\nResume in Codex: codex resume thr_1\n");
+
+  const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8"));
+  assert.equal(state.jobs[0].status, "completed");
 });
 
 test("review rejects focus text because it is native-review only", () => {
