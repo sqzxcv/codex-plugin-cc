@@ -2011,6 +2011,10 @@ test("status --wait reports a crashed worker instead of hanging when the worker 
   assert.equal(payload.job.id, "task-dead-wait");
   assert.equal(payload.job.status, "failed");
   assert.match(payload.job.errorMessage, /background worker exited before completing/);
+  // The failure message must carry the verify-on-disk warning: edits can still
+  // land via the shared app-server after the worker pid dies, so a single
+  // snapshot is not trustworthy.
+  assert.match(payload.job.errorMessage, /still be landing via the shared app-server|re-check disk state/i);
 
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const job = state.jobs.find((candidate) => candidate.id === "task-dead-wait");

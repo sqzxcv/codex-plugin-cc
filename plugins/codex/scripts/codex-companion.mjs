@@ -968,7 +968,11 @@ function enqueueBackgroundTask(cwd, job, request) {
 }
 
 function buildWorkerExitedError(jobId) {
-  return `background worker exited before completing; check /codex:status ${jobId}`;
+  // The worker drives the turn, but the shared app-server applies file edits, so
+  // edits in flight when the worker died can still land AFTER this point. Carry
+  // the verify-on-disk discipline in the message so callers re-check rather than
+  // trust a single (possibly mid-write) snapshot.
+  return `background worker exited before completing; check /codex:status ${jobId}. Files it was editing may have already landed or may still be landing via the shared app-server — re-check disk state (\`git status\`) before concluding, and do not trust a single snapshot.`;
 }
 
 function failActiveWorkerJob(workspaceRoot, job, errorMessage) {
