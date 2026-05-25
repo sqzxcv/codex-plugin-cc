@@ -1193,9 +1193,12 @@ async function handleTask(argv) {
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
-    // PR #346 review (P1): a failed launch must not exit 0, or callers treat a failed
-    // dispatch as a successful one and skip retry/escalation.
-    if (payload.status === "failed") {
+    // PR #346 review: exit non-zero unless a live background job was actually
+    // dispatched (queued/running). A terminal launch — `failed`, or `cancelled`
+    // when a concurrent cancel won before worker spawn — means there is no job to
+    // poll, so callers keying off exit status must not treat it as a successful
+    // dispatch (they would skip retry/escalation).
+    if (!isActiveJobStatus(payload.status)) {
       process.exitCode = 1;
     }
     return;

@@ -1184,7 +1184,8 @@ syncBuiltinESMExports();
     }
   });
 
-  assert.equal(launched.status, 0, launched.stderr);
+  // PR #346 review: a cancelled launch dispatched no live job, so exit is non-zero.
+  assert.notEqual(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
   assert.equal(launchPayload.status, "cancelled");
   assert.equal(fs.existsSync(spawnMarker), false, "expected cancellation guard to skip task-worker spawn");
@@ -1326,7 +1327,8 @@ syncBuiltinESMExports();
     }
   });
 
-  assert.equal(launched.status, 0, launched.stderr);
+  // PR #346 review: a cancelled launch dispatched no live job, so exit is non-zero.
+  assert.notEqual(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
   assert.equal(launchPayload.status, "cancelled");
   assert.equal(fs.existsSync(killMarker), true, "expected the orphaned task-worker process group to be killed");
@@ -1552,7 +1554,8 @@ syncBuiltinESMExports();
     }
   });
 
-  assert.equal(launched.status, 0, launched.stderr);
+  // PR #346 review: a cancelled launch dispatched no live job, so exit is non-zero.
+  assert.notEqual(launched.status, 0, launched.stderr);
   assert.doesNotMatch(launched.stdout, /\[\[codex-task status=dispatched/);
   assert.doesNotMatch(launched.stdout, /dispatched as background job/);
   assert.match(launched.stdout, /was cancelled before a worker launched; no work started\./);
