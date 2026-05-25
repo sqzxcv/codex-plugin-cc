@@ -29,6 +29,7 @@ import {
   getConfig,
   listJobs,
   setConfig,
+  updateState,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
@@ -321,6 +322,22 @@ function renderStatusPayload(report, asJson) {
 
 function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
+}
+
+function isTerminalJobRecord(stateJob, storedJob = null) {
+  // PR #346 review: launch/cancel races can expose either the summary state row
+  // or the per-job file first, so both records must agree the job is active
+  // before a launcher writes worker-owned fields such as pid.
+  return !isActiveJobStatus(stateJob?.status) || Boolean(storedJob && !isActiveJobStatus(storedJob.status));
+}
+
+function resolveLaunchStatus(stateJob, storedJob = null, fallback = "queued") {
+  for (const status of [stateJob?.status, storedJob?.status]) {
+    if (status && !isActiveJobStatus(status)) {
+      return status;
+    }
+  }
+  return stateJob?.status ?? storedJob?.status ?? fallback;
 }
 
 function getCurrentClaudeSessionId() {
@@ -619,6 +636,17 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
+  // PR #346 review: a terminal enqueue payload means launch did not dispatch a
+  // worker, so emitting the dispatched sentinel would make hooks and humans
+  // believe there is live background work to poll.
+  if (!isActiveJobStatus(payload.status)) {
+    if (payload.status === "cancelled") {
+      return `Codex task ${payload.jobId} was cancelled before a worker launched; no work started.\n`;
+    }
+    const detail = payload.errorMessage ? `: ${payload.errorMessage}` : ".";
+    return `Codex task ${payload.jobId} failed before a worker launched${detail}\n`;
+  }
+
   const statusToken = buildTaskDispatchedStatusToken(payload.jobId);
   return [
     statusToken,
@@ -712,17 +740,153 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId) {
-  const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
-    cwd,
-    env: process.env,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true
+function formatSpawnFailureMessage(error) {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  return detail ? `Failed to launch background worker: ${detail}` : "Failed to launch background worker.";
+}
+
+function persistQueuedTaskRecord(workspaceRoot, queuedRecord) {
+  // PR #346 review: the launch record is inserted through updateState so the
+  // summary row and stored job file are created from the same read-modify-write
+  // transition before any worker is allowed to observe the request.
+  updateState(workspaceRoot, (state) => {
+    const existingIndex = state.jobs.findIndex((candidate) => candidate.id === queuedRecord.id);
+    const nextRecord = {
+      ...queuedRecord,
+      updatedAt: nowIso()
+    };
+    if (existingIndex === -1) {
+      state.jobs.unshift(nextRecord);
+    } else {
+      state.jobs[existingIndex] = {
+        ...state.jobs[existingIndex],
+        ...nextRecord
+      };
+    }
+    writeJobFile(workspaceRoot, queuedRecord.id, nextRecord);
   });
+}
+
+function markTaskLaunchFailed(workspaceRoot, jobId, errorMessage, fallbackLogFile = null) {
+  let failedJob = null;
+  let preservedJob = null;
+
+  // PR #346 review: launch failures must become a durable failed job via one
+  // state read-modify-write, otherwise foreground waiters can hang on a queued
+  // record whose worker never existed.
+  updateState(workspaceRoot, (state) => {
+    const jobIndex = state.jobs.findIndex((candidate) => candidate.id === jobId);
+    if (jobIndex === -1) {
+      return;
+    }
+
+    const stateJob = state.jobs[jobIndex];
+    const storedJob = readStoredJob(workspaceRoot, jobId);
+    if (isTerminalJobRecord(stateJob, storedJob)) {
+      preservedJob = {
+        ...stateJob,
+        ...(storedJob ?? {})
+      };
+      return;
+    }
+
+    const completedAt = nowIso();
+    failedJob = {
+      ...(storedJob ?? {}),
+      ...stateJob,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      completedAt,
+      updatedAt: completedAt,
+      errorMessage,
+      logFile: stateJob.logFile ?? storedJob?.logFile ?? fallbackLogFile
+    };
+    state.jobs[jobIndex] = failedJob;
+    writeJobFile(workspaceRoot, jobId, failedJob);
+  });
+
+  if (failedJob) {
+    appendLogLine(failedJob.logFile, errorMessage);
+    return failedJob;
+  }
+  return preservedJob;
+}
+
+function persistSpawnedTaskWorkerPid(workspaceRoot, jobId, childPid) {
+  let shouldKillWorker = false;
+  let launchStatus = "queued";
+  let updatedJob = null;
+
+  // PR #346 review: pid persistence must re-check cancellation inside the same
+  // state read-modify-write that writes the pid. A cancel that already made the
+  // job terminal wins, and the just-spawned worker is killed after the state
+  // update instead of being resurrected by stale launch data.
+  updateState(workspaceRoot, (state) => {
+    const jobIndex = state.jobs.findIndex((candidate) => candidate.id === jobId);
+    if (jobIndex === -1) {
+      shouldKillWorker = true;
+      launchStatus = "cancelled";
+      return;
+    }
+
+    const stateJob = state.jobs[jobIndex];
+    const storedJob = readStoredJob(workspaceRoot, jobId);
+    if (isTerminalJobRecord(stateJob, storedJob)) {
+      shouldKillWorker = true;
+      launchStatus = resolveLaunchStatus(stateJob, storedJob, "cancelled");
+      updatedJob = {
+        ...stateJob,
+        ...(storedJob ?? {})
+      };
+      return;
+    }
+
+    const updatedAt = nowIso();
+    updatedJob = {
+      ...(storedJob ?? {}),
+      ...stateJob,
+      pid: childPid,
+      updatedAt
+    };
+    state.jobs[jobIndex] = updatedJob;
+    writeJobFile(workspaceRoot, jobId, updatedJob);
+    launchStatus = updatedJob.status;
+  });
+
+  return { shouldKillWorker, launchStatus, job: updatedJob };
+}
+
+function spawnDetachedTaskWorker(cwd, jobId, options = {}) {
+  const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
+  let child = null;
+
+  try {
+    child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch (error) {
+    return { child: null, error };
+  }
+
+  const handleSpawnError = (error) => {
+    options.onError?.(error);
+  };
+  if (typeof child.once === "function") {
+    child.once("error", handleSpawnError);
+  } else if (typeof child.on === "function") {
+    child.on("error", handleSpawnError);
+  }
+
   child.unref();
-  return child;
+  if (!normalizeWorkerPid(child.pid)) {
+    return { child, error: new Error("missing worker pid") };
+  }
+  return { child, error: null };
 }
 
 function enqueueBackgroundTask(cwd, job, request) {
@@ -739,8 +903,7 @@ function enqueueBackgroundTask(cwd, job, request) {
     logFile,
     request
   };
-  writeJobFile(job.workspaceRoot, job.id, queuedRecord);
-  upsertJob(job.workspaceRoot, queuedRecord);
+  persistQueuedTaskRecord(job.workspaceRoot, queuedRecord);
 
   // PR #346 review: /codex:cancel can land after the durable queued record is
   // written but before worker launch; re-read the job and do not spawn a worker
@@ -760,24 +923,36 @@ function enqueueBackgroundTask(cwd, job, request) {
     };
   }
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
-  // PR #346 review: keep the pre-spawn record, then persist the worker pid for cancellation.
-  const spawnedRecord = readStoredJob(job.workspaceRoot, job.id) ?? latestQueuedRecord;
-  if (isActiveJobStatus(spawnedRecord.status)) {
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...spawnedRecord,
-      pid: child.pid ?? null
-    });
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      pid: child.pid ?? null
-    });
+  const recordLaunchFailure = (error) =>
+    markTaskLaunchFailed(job.workspaceRoot, job.id, formatSpawnFailureMessage(error), logFile);
+  const { child, error: spawnError } = spawnDetachedTaskWorker(cwd, job.id, {
+    onError: recordLaunchFailure
+  });
+  if (spawnError || !child) {
+    const failedJob = recordLaunchFailure(spawnError ?? new Error("missing child process"));
+    return {
+      payload: {
+        jobId: job.id,
+        status: failedJob?.status ?? "failed",
+        title: job.title,
+        summary: job.summary,
+        logFile,
+        errorMessage: failedJob?.errorMessage ?? formatSpawnFailureMessage(spawnError)
+      },
+      logFile
+    };
+  }
+
+  const { shouldKillWorker, launchStatus } = persistSpawnedTaskWorkerPid(job.workspaceRoot, job.id, child.pid);
+  if (shouldKillWorker) {
+    appendLogLine(logFile, `Terminating background worker because job is ${launchStatus}.`);
+    terminateProcessTree(child.pid);
   }
 
   return {
     payload: {
       jobId: job.id,
-      status: "queued",
+      status: launchStatus,
       title: job.title,
       summary: job.summary,
       logFile
@@ -1184,27 +1359,35 @@ async function handleCancel(argv) {
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
-  const nextJob = {
-    ...job,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    completedAt,
-    errorMessage: "Cancelled by user."
-  };
+  let nextJob = null;
+  // PR #346 review: cancellation is the terminal launch/cancel transition, so
+  // the state row and stored job file are updated from one read-modify-write
+  // instead of a stale stored-job write followed by a separate state patch.
+  updateState(workspaceRoot, (state) => {
+    const jobIndex = state.jobs.findIndex((candidate) => candidate.id === job.id);
+    const stateJob = jobIndex === -1 ? job : state.jobs[jobIndex];
+    const latestStoredJob = readStoredJob(workspaceRoot, job.id) ?? existing;
+    nextJob = {
+      ...latestStoredJob,
+      ...stateJob,
+      status: "cancelled",
+      phase: "cancelled",
+      pid: null,
+      completedAt,
+      updatedAt: completedAt,
+      errorMessage: "Cancelled by user."
+    };
 
-  writeJobFile(workspaceRoot, job.id, {
-    ...existing,
-    ...nextJob,
-    cancelledAt: completedAt
-  });
-  upsertJob(workspaceRoot, {
-    id: job.id,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    errorMessage: "Cancelled by user.",
-    completedAt
+    if (jobIndex === -1) {
+      state.jobs.unshift(nextJob);
+    } else {
+      state.jobs[jobIndex] = nextJob;
+    }
+
+    writeJobFile(workspaceRoot, job.id, {
+      ...nextJob,
+      cancelledAt: completedAt
+    });
   });
 
   const payload = {

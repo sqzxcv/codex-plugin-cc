@@ -1060,6 +1060,308 @@ syncBuiltinESMExports();
   assert.equal(storedJob.pid, null);
 });
 
+test("task --background does not persist a worker pid when cancellation wins after spawn", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const killMarker = path.join(binDir, "task-worker-killed.json");
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const preloadPath = writePreloadScript(
+    binDir,
+    `
+const fs = require("node:fs");
+const path = require("node:path");
+const childProcess = require("node:child_process");
+const processModule = require("node:process");
+const { syncBuiltinESMExports } = require("node:module");
+const killMarker = ${JSON.stringify(killMarker)};
+const originalReadFileSync = fs.readFileSync;
+const originalWriteFileSync = fs.writeFileSync;
+const originalSpawn = childProcess.spawn;
+const originalKill = processModule.kill;
+let spawnedTaskWorker = false;
+let injectedCancellation = false;
+let rewriting = false;
+
+function encodeLikeOriginal(value, options) {
+  return options === "utf8" || options?.encoding === "utf8" ? value : Buffer.from(value);
+}
+
+function cancelTaskJob(job) {
+  return {
+    ...job,
+    status: "cancelled",
+    phase: "cancelled",
+    pid: null,
+    errorMessage: "Cancelled after worker spawn.",
+    cancelledAt: new Date().toISOString()
+  };
+}
+
+function writeJson(filePath, payload) {
+  rewriting = true;
+  try {
+    originalWriteFileSync(filePath, JSON.stringify(payload, null, 2) + "\\n", "utf8");
+  } finally {
+    rewriting = false;
+  }
+}
+
+fs.readFileSync = function patchedReadFileSync(file, options) {
+  const filePath = String(file);
+  const data = originalReadFileSync.apply(this, arguments);
+  if (!spawnedTaskWorker || injectedCancellation || rewriting || !filePath.endsWith(path.sep + "state.json")) {
+    return data;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(data));
+  } catch {
+    return data;
+  }
+
+  if (!Array.isArray(parsed.jobs)) {
+    return data;
+  }
+
+  let cancelledJob = null;
+  const jobs = parsed.jobs.map((job) => {
+    if (!cancelledJob && job?.jobClass === "task" && job.status === "queued") {
+      cancelledJob = cancelTaskJob(job);
+      return cancelledJob;
+    }
+    return job;
+  });
+  if (!cancelledJob) {
+    return data;
+  }
+
+  injectedCancellation = true;
+  const cancelledState = { ...parsed, jobs };
+  writeJson(filePath, cancelledState);
+  writeJson(path.join(path.dirname(filePath), "jobs", cancelledJob.id + ".json"), cancelledJob);
+  return encodeLikeOriginal(JSON.stringify(cancelledState, null, 2) + "\\n", options);
+};
+
+childProcess.spawn = function patchedSpawn(command, args, options) {
+  if (Array.isArray(args) && args[1] === "task-worker") {
+    spawnedTaskWorker = true;
+    return {
+      pid: 424242,
+      unref() {},
+      once() {
+        return this;
+      },
+      on() {
+        return this;
+      }
+    };
+  }
+  return originalSpawn.apply(this, arguments);
+};
+
+processModule.kill = function patchedKill(pid, signal) {
+  if (pid === -424242 || pid === 424242) {
+    originalWriteFileSync(killMarker, JSON.stringify({ pid, signal }, null, 2) + "\\n", "utf8");
+    return true;
+  }
+  return originalKill.apply(this, arguments);
+};
+
+syncBuiltinESMExports();
+`
+  );
+
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: extendNodeOptions(preloadPath)
+    }
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.status, "cancelled");
+  assert.equal(fs.existsSync(killMarker), true, "expected the orphaned task-worker process group to be killed");
+
+  const stateDir = resolveStateDir(repo);
+  const job = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8")).jobs.find(
+    (candidate) => candidate.id === launchPayload.jobId
+  );
+  assert.equal(job.status, "cancelled");
+  assert.equal(job.pid, null);
+
+  const storedJob = JSON.parse(fs.readFileSync(path.join(stateDir, "jobs", `${launchPayload.jobId}.json`), "utf8"));
+  assert.equal(storedJob.status, "cancelled");
+  assert.equal(storedJob.pid, null);
+});
+
+test("foreground task reports a structured failure when the detached worker spawn fails", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const preloadPath = writePreloadScript(
+    binDir,
+    `
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const { syncBuiltinESMExports } = require("node:module");
+const originalSpawn = childProcess.spawn;
+
+childProcess.spawn = function patchedSpawn(command, args, options) {
+  if (Array.isArray(args) && args[1] === "task-worker") {
+    const child = new EventEmitter();
+    child.pid = undefined;
+    child.unref = function unref() {};
+    process.nextTick(() => {
+      const error = new Error("spawn ENOENT task-worker");
+      error.code = "ENOENT";
+      child.emit("error", error);
+    });
+    return child;
+  }
+  return originalSpawn.apply(this, arguments);
+};
+
+syncBuiltinESMExports();
+`
+  );
+
+  const result = spawnSync(process.execPath, [SCRIPT, "task", "--write", "--json", "fix the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: extendNodeOptions(preloadPath)
+    },
+    encoding: "utf8",
+    timeout: 3000,
+    windowsHide: true
+  });
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "foreground task hung waiting for a worker that never launched");
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stderr, /Unhandled 'error' event/);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.status, "failed");
+  assert.equal(payload.job.pid, null);
+  assert.match(payload.storedJob.errorMessage, /Failed to launch background worker|missing worker pid|spawn ENOENT/);
+});
+
+test("task --background cancelled before launch renders terminal text without a dispatched token", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const preloadPath = writePreloadScript(
+    binDir,
+    `
+const fs = require("node:fs");
+const path = require("node:path");
+const childProcess = require("node:child_process");
+const { syncBuiltinESMExports } = require("node:module");
+const originalWriteFileSync = fs.writeFileSync;
+const originalSpawn = childProcess.spawn;
+let rewriting = false;
+
+function cancelQueuedTask(job) {
+  return {
+    ...job,
+    status: "cancelled",
+    phase: "cancelled",
+    pid: null,
+    errorMessage: "Cancelled before worker launch.",
+    cancelledAt: new Date().toISOString()
+  };
+}
+
+function rewriteJson(filePath, payload) {
+  rewriting = true;
+  try {
+    originalWriteFileSync(filePath, JSON.stringify(payload, null, 2) + "\\n", "utf8");
+  } finally {
+    rewriting = false;
+  }
+}
+
+fs.writeFileSync = function patchedWriteFileSync(file, data, options) {
+  originalWriteFileSync.apply(this, arguments);
+  if (rewriting) {
+    return;
+  }
+
+  const filePath = String(file);
+  if (!filePath.endsWith(".json")) {
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(data));
+  } catch {
+    return;
+  }
+
+  if (filePath.includes(path.sep + "jobs" + path.sep) && parsed?.jobClass === "task" && parsed.status === "queued") {
+    rewriteJson(filePath, cancelQueuedTask(parsed));
+    return;
+  }
+
+  if (filePath.endsWith(path.sep + "state.json") && Array.isArray(parsed.jobs)) {
+    let changed = false;
+    const jobs = parsed.jobs.map((job) => {
+      if (job?.jobClass !== "task" || job.status !== "queued") {
+        return job;
+      }
+      changed = true;
+      return cancelQueuedTask(job);
+    });
+    if (changed) {
+      rewriteJson(filePath, { ...parsed, jobs });
+    }
+  }
+};
+
+childProcess.spawn = function patchedSpawn(command, args, options) {
+  if (Array.isArray(args) && args[1] === "task-worker") {
+    throw new Error("task-worker should not launch after cancellation");
+  }
+  return originalSpawn.apply(this, arguments);
+};
+
+syncBuiltinESMExports();
+`
+  );
+
+  const launched = run("node", [SCRIPT, "task", "--background", "investigate the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: extendNodeOptions(preloadPath)
+    }
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  assert.doesNotMatch(launched.stdout, /\[\[codex-task status=dispatched/);
+  assert.doesNotMatch(launched.stdout, /dispatched as background job/);
+  assert.match(launched.stdout, /was cancelled before a worker launched; no work started\./);
+});
+
 test("task --background emits a dispatched token without promising notification", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
