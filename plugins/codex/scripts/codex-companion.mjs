@@ -65,6 +65,7 @@ import {
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
+const DEFAULT_AWAIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
@@ -77,8 +78,9 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background [--await]] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
+      "  node scripts/codex-companion.mjs await <job-id> [--timeout-ms <ms>] [--poll-interval-ms <ms>] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
     ].join("\n")
@@ -288,6 +290,26 @@ function isActiveJobStatus(status) {
   return status === "queued" || status === "running";
 }
 
+function isTerminalJobStatus(status) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function normalizeTimeoutMs(value, fallback) {
+  if (value == null) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+
+function normalizePollIntervalMs(value) {
+  if (value == null) {
+    return DEFAULT_STATUS_POLL_INTERVAL_MS;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(100, parsed) : DEFAULT_STATUS_POLL_INTERVAL_MS;
+}
+
 function getCurrentClaudeSessionId() {
   return process.env[SESSION_ID_ENV] ?? null;
 }
@@ -313,8 +335,8 @@ function findLatestResumableTaskJob(jobs) {
 }
 
 async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
-  const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
-  const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_STATUS_WAIT_TIMEOUT_MS);
+  const pollIntervalMs = normalizePollIntervalMs(options.pollIntervalMs);
   const deadline = Date.now() + timeoutMs;
   let snapshot = buildSingleJobSnapshot(cwd, reference);
 
@@ -327,6 +349,53 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
     ...snapshot,
     waitTimedOut: isActiveJobStatus(snapshot.job.status),
     timeoutMs
+  };
+}
+
+async function waitForTerminalJobSnapshot(cwd, reference, options = {}) {
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_AWAIT_TIMEOUT_MS);
+  const pollIntervalMs = normalizePollIntervalMs(options.pollIntervalMs);
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = buildSingleJobSnapshot(cwd, reference);
+
+  while (!isTerminalJobStatus(snapshot.job.status) && Date.now() < deadline) {
+    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+    snapshot = buildSingleJobSnapshot(cwd, reference);
+  }
+
+  return {
+    ...snapshot,
+    waitTimedOut: !isTerminalJobStatus(snapshot.job.status),
+    timeoutMs
+  };
+}
+
+async function awaitJobResult(cwd, reference, options = {}) {
+  const snapshot = await waitForTerminalJobSnapshot(cwd, reference, {
+    timeoutMs: options.timeoutMs,
+    pollIntervalMs: options.pollIntervalMs
+  });
+
+  if (snapshot.waitTimedOut) {
+    outputCommandResult(snapshot, renderJobStatusReport(snapshot.job), options.json);
+    process.exitCode = 124;
+    return snapshot;
+  }
+
+  const storedJob = readStoredJob(snapshot.workspaceRoot, snapshot.job.id);
+  const payload = {
+    job: snapshot.job,
+    storedJob
+  };
+  outputCommandResult(payload, renderStoredJobResult(snapshot.job, storedJob), options.json);
+
+  if (snapshot.job.status !== "completed") {
+    process.exitCode = 1;
+  }
+
+  return {
+    ...snapshot,
+    storedJob
   };
 }
 
@@ -551,7 +620,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+  return `${payload.title} queued as ${payload.jobId}.\nThis command is only launch-complete; daemon completion is not signaled here.\nCheck /codex:status ${payload.jobId} for progress.\nFor completion notification, use: task --background --await ...\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -731,8 +800,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "await"],
     aliasMap: {
       m: "model"
     }
@@ -770,6 +839,14 @@ async function handleTask(argv) {
       jobId: job.id
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
+    if (options.await) {
+      await awaitJobResult(cwd, job.id, {
+        json: options.json,
+        timeoutMs: options["timeout-ms"],
+        pollIntervalMs: options["poll-interval-ms"]
+      });
+      return;
+    }
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
@@ -790,6 +867,25 @@ async function handleTask(argv) {
       }),
     { json: options.json }
   );
+}
+
+async function handleAwait(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json"]
+  });
+
+  const reference = positionals[0] ?? "";
+  if (!reference) {
+    throw new Error("`await` requires a job id.");
+  }
+
+  const cwd = resolveCommandCwd(options);
+  await awaitJobResult(cwd, reference, {
+    json: options.json,
+    timeoutMs: options["timeout-ms"],
+    pollIntervalMs: options["poll-interval-ms"]
+  });
 }
 
 async function handleTaskWorker(argv) {
@@ -1005,6 +1101,9 @@ async function main() {
       break;
     case "status":
       await handleStatus(argv);
+      break;
+    case "await":
+      await handleAwait(argv);
       break;
     case "result":
       handleResult(argv);
