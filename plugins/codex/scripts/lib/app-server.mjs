@@ -198,12 +198,23 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
 
     // Leak fix: a non-detached codex app-server child is NOT reaped by the OS when
     // this host process exits normally. Guarantee we kill OUR OWN child on host exit
-    // (exit handlers must be synchronous, so SIGKILL). We never scan/kill processes we
-    // did not spawn -- parallel sessions own their own app-servers.
+    // (exit handlers must be synchronous). We never scan/kill processes we did not
+    // spawn -- parallel sessions own their own app-servers.
     this._exitReaper = () => {
       try {
         if (this.proc && this.proc.exitCode === null && !this.proc.killed) {
-          this.proc.kill("SIGKILL");
+          if (process.platform === "win32") {
+            // PR #346 review (P1): with shell:true, this.proc is cmd.exe and the
+            // real codex app-server is its child; a flat SIGKILL would orphan it.
+            // terminateProcessTree is synchronous (taskkill /T /F), so it is safe
+            // in an exit handler and kills the whole tree.
+            terminateProcessTree(this.proc.pid);
+          } else {
+            // Direct (non-shell) child: SIGKILL it; the orphan is reparented to
+            // PID 1 and reaped by init (launchd/systemd) — see the reply on the
+            // P2 zombie note for the no-reaper-container caveat.
+            this.proc.kill("SIGKILL");
+          }
         }
       } catch {
         // best-effort during host teardown
