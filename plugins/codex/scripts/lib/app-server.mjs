@@ -183,6 +183,8 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   constructor(cwd, options = {}) {
     super(cwd, options);
     this.transport = "direct";
+    // Holds the per-child process exit listener so close() and child shutdown can remove it exactly once.
+    this._exitReaper = null;
   }
 
   async initialize() {
@@ -194,6 +196,23 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       windowsHide: true
     });
 
+    // Leak fix: a non-detached codex app-server child is NOT reaped by the OS when
+    // this host process exits normally. Guarantee we kill OUR OWN child on host exit
+    // (exit handlers must be synchronous, so SIGKILL). We never scan/kill processes we
+    // did not spawn -- parallel sessions own their own app-servers.
+    this._exitReaper = () => {
+      try {
+        if (this.proc && this.proc.exitCode === null && !this.proc.killed) {
+          this.proc.kill("SIGKILL");
+        }
+      } catch {
+        // best-effort during host teardown
+      }
+    };
+    process.once("exit", this._exitReaper);
+    // Do not add SIGTERM/SIGINT handlers here: non-exiting signal listeners would keep
+    // plain CLI hosts alive, while existing process-tree shutdown already covers signals.
+
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
 
@@ -202,10 +221,12 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     });
 
     this.proc.on("error", (error) => {
+      this.removeExitReaper();
       this.handleExit(error);
     });
 
     this.proc.on("exit", (code, signal) => {
+      this.removeExitReaper();
       const detail =
         code === 0
           ? null
@@ -225,9 +246,20 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     this.notify("initialized", {});
   }
 
+  removeExitReaper() {
+    // The exit listener belongs to this spawned child only; removing it prevents
+    // listener buildup in long-lived hosts after the child has already stopped.
+    if (!this._exitReaper) {
+      return;
+    }
+    process.removeListener("exit", this._exitReaper);
+    this._exitReaper = null;
+  }
+
   async close() {
     if (this.closed) {
       await this.exitPromise;
+      this.removeExitReaper();
       return;
     }
 
@@ -259,6 +291,7 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     }
 
     await this.exitPromise;
+    this.removeExitReaper();
   }
 
   sendMessage(message) {

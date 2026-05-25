@@ -3,10 +3,11 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -70,6 +71,18 @@ function seedRunningTaskJob(workspace, { id, pid }) {
   );
 
   return { stateDir, jobsDir, job, logFile };
+}
+
+function isPidDead(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return true;
+    }
+    throw error;
+  }
 }
 
 test("setup reports ready when fake codex is installed and authenticated", () => {
@@ -2722,6 +2735,120 @@ test("stop hook runs the actual task when auth status looks stale", () => {
   const payload = JSON.parse(allowed.stdout);
   assert.equal(payload.decision, "block");
   assert.match(payload.reason, /Missing empty-state guard/i);
+});
+
+test("locally-spawned codex app-server is reaped when the host process exits without close()", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const hostScript = path.join(repo, "host-exits-with-direct-app-server.mjs");
+  const appServerModule = pathToFileURL(path.join(PLUGIN_ROOT, "scripts", "lib", "app-server.mjs")).href;
+  let appServerPid = null;
+
+  installFakeCodex(binDir, "interruptible-slow-task");
+
+  fs.writeFileSync(
+    hostScript,
+    `import { CodexAppServerClient } from ${JSON.stringify(appServerModule)};
+
+const cwd = ${JSON.stringify(repo)};
+const client = await CodexAppServerClient.connect(cwd, { disableBroker: true, env: process.env });
+const thread = await client.request("thread/start", { cwd, ephemeral: true });
+await client.request("turn/start", {
+  threadId: thread.thread.id,
+  input: [{ type: "text", text: "keep the fake app-server alive until the host exits" }]
+});
+
+process.stdout.write(String(client.proc.pid) + "\\n", () => {
+  process.exit(0);
+});
+`,
+    "utf8"
+  );
+
+  t.after(() => {
+    if (appServerPid !== null) {
+      try {
+        process.kill(appServerPid, "SIGKILL");
+      } catch {
+        // Ignore a process that was already reaped by the exit handler under test.
+      }
+    }
+  });
+
+  const host = spawn(process.execPath, [hostScript], {
+    cwd: repo,
+    env: buildEnv(binDir),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stdout = "";
+  let stderr = "";
+  host.stdout.setEncoding("utf8");
+  host.stderr.setEncoding("utf8");
+  host.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  host.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  const hostResult = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      host.kill("SIGKILL");
+      reject(new Error("Timed out waiting for host process to exit."));
+    }, 5000);
+    host.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    host.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal });
+    });
+  });
+
+  assert.equal(hostResult.code, 0, stderr);
+  assert.equal(hostResult.signal, null, stderr);
+  appServerPid = Number.parseInt(stdout.trim(), 10);
+  assert.equal(Number.isInteger(appServerPid), true, `invalid app-server pid output: ${stdout}`);
+
+  await waitFor(() => isPidDead(appServerPid), { timeoutMs: 4000, intervalMs: 50 });
+});
+
+test("close() removes the exit reaper for locally-spawned codex app-server clients", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const beforeExitListeners = process.listenerCount("exit");
+  let client = null;
+  let appServerPid = null;
+
+  installFakeCodex(binDir);
+
+  try {
+    client = await CodexAppServerClient.connect(repo, {
+      disableBroker: true,
+      env: buildEnv(binDir)
+    });
+    appServerPid = client.proc.pid;
+
+    assert.equal(client.transport, "direct");
+    assert.equal(process.listenerCount("exit"), beforeExitListeners + 1);
+
+    await client.close();
+
+    await waitFor(() => isPidDead(appServerPid), { timeoutMs: 4000, intervalMs: 50 });
+    assert.equal(process.listenerCount("exit"), beforeExitListeners);
+  } finally {
+    if (client) {
+      await client.close().catch(() => {});
+    }
+    if (appServerPid !== null) {
+      try {
+        process.kill(appServerPid, "SIGKILL");
+      } catch {
+        // Ignore a process that close() or the child exit event already reaped.
+      }
+    }
+  }
 });
 
 test("commands lazily start and reuse one shared app-server after first use", async () => {
