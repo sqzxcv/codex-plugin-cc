@@ -1292,6 +1292,61 @@ syncBuiltinESMExports();
   assert.match(payload.storedJob.errorMessage, /Failed to launch background worker|missing worker pid|spawn ENOENT/);
 });
 
+test("task --background exits non-zero when the worker spawn fails", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const preloadPath = writePreloadScript(
+    binDir,
+    `
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const { syncBuiltinESMExports } = require("node:module");
+const originalSpawn = childProcess.spawn;
+
+childProcess.spawn = function patchedSpawn(command, args, options) {
+  if (Array.isArray(args) && args[1] === "task-worker") {
+    const child = new EventEmitter();
+    child.pid = undefined;
+    child.unref = function unref() {};
+    process.nextTick(() => {
+      const error = new Error("spawn ENOENT task-worker");
+      error.code = "ENOENT";
+      child.emit("error", error);
+    });
+    return child;
+  }
+  return originalSpawn.apply(this, arguments);
+};
+
+syncBuiltinESMExports();
+`
+  );
+
+  const result = spawnSync(process.execPath, [SCRIPT, "task", "--background", "--json", "fix the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      NODE_OPTIONS: extendNodeOptions(preloadPath)
+    },
+    encoding: "utf8",
+    timeout: 3000,
+    windowsHide: true
+  });
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "background task hung after a worker launch failure");
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stderr, /Unhandled 'error' event/);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "failed");
+});
+
 test("task --background cancelled before launch renders terminal text without a dispatched token", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

@@ -19,6 +19,7 @@ const FAILURE_CONTEXT =
 // run succeeded (PR #346 review P1).
 const FAILURE_STATUSES = new Set(["failed", "fail", "error", "errored", "cancelled", "canceled", "timed_out", "timeout", "aborted"]);
 const ACTIVE_TASK_STATUSES = new Set(["queued", "running"]);
+const NON_TERMINAL_AGENT_STATUSES = new Set(["async_launched", "running", "sub_agent_entered"]);
 const BASH_AUTO_BACKGROUND_MARKER = "Command running in background with ID:";
 const BASH_AUTO_BACKGROUND_OUTPUT_PREFIX = "Output is being written to:";
 // PR #346 review: state fallback is only safe when this synchronous return
@@ -89,7 +90,9 @@ function isCodexRescueAgentToolUse(input) {
 
 function isSynchronousAgentReturn(toolResponse) {
   const status = String(toolResponse?.status ?? "").toLowerCase();
-  return status !== "async_launched" && status !== "running";
+  // PR #346 review (P2): sub_agent_entered is an interactive handoff, not a terminal
+  // return — the rescue agent is still active, so the completion hook must stay silent.
+  return !NON_TERMINAL_AGENT_STATUSES.has(status);
 }
 
 function getHookCwd(input) {
@@ -123,6 +126,10 @@ function isFailedOrEmptyReturn(toolResponse, responseText) {
   }
   const status = String(toolResponse?.status ?? "").toLowerCase();
   return FAILURE_STATUSES.has(status);
+}
+
+function hasFailureStatus(toolResponse) {
+  return FAILURE_STATUSES.has(String(toolResponse?.status ?? "").toLowerCase());
 }
 
 function collectText(value) {
@@ -164,6 +171,14 @@ function buildCompletionContext(input) {
   }
 
   const responseText = collectText(toolResponse);
+  // PR #346 review (P1): the structured Agent tool status is authoritative over any
+  // [[codex-task ...]] line in the body. A failed return whose text echoes a complete/
+  // dispatched token must not be reclassified as success or an active dispatch, so a
+  // known failure status short-circuits before token handling.
+  if (hasFailureStatus(toolResponse)) {
+    return FAILURE_CONTEXT;
+  }
+
   const token = parseTaskStatusToken(responseText);
   // The complete sentinel is the only positive proof of a successful run; the
   // companion stamps it solely on real completion, so it is the lone path that

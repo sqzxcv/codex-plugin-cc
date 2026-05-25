@@ -1183,6 +1183,11 @@ async function handleTask(argv) {
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    // PR #346 review (P1): a failed launch must not exit 0, or callers treat a failed
+    // dispatch as a successful one and skip retry/escalation.
+    if (payload.status === "failed") {
+      process.exitCode = 1;
+    }
     return;
   }
 

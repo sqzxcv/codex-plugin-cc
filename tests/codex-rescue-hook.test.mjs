@@ -193,6 +193,31 @@ test("codex-rescue hook injects a complete line when the completion token is pre
   });
 });
 
+test("codex-rescue hook reports failure (not success) when a failed return echoes the complete token", () => {
+  const result = runHook({
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    tool_input: {
+      subagent_type: "codex:codex-rescue"
+    },
+    tool_response: {
+      status: "failed",
+      agentId: "agent-failed-echo-complete",
+      content: [
+        {
+          type: "text",
+          text: "The original prompt mentioned this literal token:\n[[codex-task status=complete]]\nThe run still failed.\n"
+        }
+      ]
+    }
+  });
+
+  const payload = parseHookOutput(result);
+  const additionalContext = payload.hookSpecificOutput.additionalContext;
+  assert.match(additionalContext, /exited WITHOUT a success signal/);
+  assert.doesNotMatch(additionalContext, /COMPLETED and exited/);
+});
+
 test("codex-rescue hook treats the completion token as authoritative over active task state", () => {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
@@ -365,6 +390,29 @@ test("codex-rescue hook reports failed tokenless returns without a success signa
   );
 });
 
+test("codex-rescue hook stays silent on sub_agent_entered handoff", () => {
+  const result = runHook({
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    tool_input: {
+      subagent_type: "codex:codex-rescue"
+    },
+    tool_response: {
+      status: "sub_agent_entered",
+      agentId: "agent-interactive-handoff",
+      content: [
+        {
+          type: "text",
+          text: "codex-rescue entered an interactive subagent handoff.\n"
+        }
+      ]
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+});
+
 test("codex-rescue hook reports empty tokenless returns without a success signal", () => {
   const result = runHook({
     hook_event_name: "PostToolUse",
@@ -464,6 +512,32 @@ test("codex-rescue hook injects a dispatched line when the dispatched token is p
       additionalContext: expectedWatcherContext("task-abc123")
     }
   });
+});
+
+test("codex-rescue hook reports failure (not dispatch) when a failed return echoes a dispatched token", () => {
+  const result = runHook({
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    tool_input: {
+      subagent_type: "codex:codex-rescue"
+    },
+    tool_response: {
+      status: "failed",
+      agentId: "agent-failed-echo-dispatched",
+      content: [
+        {
+          type: "text",
+          text:
+            "The model output echoed a dispatch example:\n[[codex-task status=dispatched id=task-xxxx]]\nNo worker was actually launched.\n"
+        }
+      ]
+    }
+  });
+
+  const payload = parseHookOutput(result);
+  const additionalContext = payload.hookSpecificOutput.additionalContext;
+  assert.match(additionalContext, /exited WITHOUT a success signal/);
+  assert.doesNotMatch(additionalContext, /status .* --wait/);
 });
 
 test("codex-rescue hook ignores other subagent types", () => {
