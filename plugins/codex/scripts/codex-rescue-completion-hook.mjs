@@ -26,10 +26,6 @@ function buildWatcherContext(jobId) {
   return `codex-rescue background job ${jobId} is RUNNING — there is no automatic push notification. To be notified, arm a watcher: run this via the Bash tool with run_in_background=true:  node "${COMPANION_SCRIPT_PATH}" status ${jobId} --wait --timeout-ms 1800000  — it blocks until the job is terminal, then exits and re-invokes you. If it returns and the job is still running, re-arm the same command. Do NOT treat the job as done until the watcher reports a terminal status.`;
 }
 
-function buildDispatchedContext(jobId) {
-  return `codex-rescue dispatched background job ${jobId}. No automatic notification will arrive; poll /codex:status ${jobId}.`;
-}
-
 function extractBashAutoBackgroundOutputPath(text) {
   const prefixIndex = text.indexOf(BASH_AUTO_BACKGROUND_OUTPUT_PREFIX);
   if (prefixIndex === -1) {
@@ -174,7 +170,7 @@ function buildCompletionContext(input) {
   // Status tokens are emitted by this codex-rescue return, so they are more
   // authoritative than any task state that may belong to another concurrent run.
   if (token?.status === "dispatched" && token.id) {
-    return buildDispatchedContext(token.id);
+    return buildWatcherContext(token.id);
   }
 
   // The subagent may paraphrase or drop the dispatched sentinel, so companion

@@ -397,8 +397,7 @@ test("codex-rescue hook injects a dispatched line when the dispatched token is p
   assert.deepEqual(payload, {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
-      additionalContext:
-        "codex-rescue dispatched background job task-abc123. No automatic notification will arrive; poll /codex:status task-abc123."
+      additionalContext: expectedWatcherContext("task-abc123")
     }
   });
 });

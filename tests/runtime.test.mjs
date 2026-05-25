@@ -912,6 +912,27 @@ test("task --background emits a dispatched token without promising notification"
   assert.doesNotMatch(launched.stdout, /will notify|will be notified|you will be notified/i);
 });
 
+test("task rejects conflicting background and wait flags before dispatching a job", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--background", "--wait", "investigate the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  const stateFile = path.join(resolveStateDir(repo), "state.json");
+  const stateJobs = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")).jobs : [];
+  assert.deepEqual(stateJobs, []);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Choose either --background or --wait, not both\./);
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
