@@ -1252,6 +1252,16 @@ async function handleTaskWorker(argv) {
   );
 }
 
+function reconcileExitedStatusWorker(snapshot) {
+  if (!snapshot.workerExited && !hasExitedActiveWorker(snapshot.job)) {
+    return snapshot.job;
+  }
+
+  // Watcher dead-worker reliability fix: status/status --wait are the first
+  // readers that can convert a stale running worker into a durable failure.
+  return failActiveWorkerJob(snapshot.workspaceRoot, snapshot.job, buildWorkerExitedError(snapshot.job.id));
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -1264,10 +1274,22 @@ async function handleStatus(argv) {
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
-          pollIntervalMs: options["poll-interval-ms"]
+          pollIntervalMs: options["poll-interval-ms"],
+          // Watcher dead-worker reliability fix: the background completion
+          // watcher reaches detached workers through status --wait.
+          failWhenWorkerExits: true
         })
       : buildSingleJobSnapshot(cwd, reference);
-    outputCommandResult(snapshot, renderJobStatusReport(snapshot.job), options.json);
+    if (snapshot.workerExited) {
+      const failedJob = reconcileExitedStatusWorker(snapshot);
+      outputCommandResult({ ...snapshot, job: failedJob }, renderJobStatusReport(failedJob), options.json);
+      return;
+    }
+
+    // Watcher dead-worker reliability fix: a plain status read also repairs
+    // stale running state for result, hooks, and later status callers.
+    const reconciledJob = reconcileExitedStatusWorker(snapshot);
+    outputCommandResult({ ...snapshot, job: reconciledJob }, renderJobStatusReport(reconciledJob), options.json);
     return;
   }
 

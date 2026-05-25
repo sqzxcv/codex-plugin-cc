@@ -39,6 +39,39 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
+function seedRunningTaskJob(workspace, { id, pid }) {
+  // Status reads the summary state row first and the reconciler re-reads the
+  // stored job file before persisting a terminal state.
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const logFile = path.join(jobsDir, `${id}.log`);
+  const job = {
+    id,
+    status: "running",
+    phase: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    summary: "Investigate flaky test",
+    pid,
+    logFile,
+    createdAt: "2026-03-18T15:30:00.000Z",
+    startedAt: "2026-03-18T15:30:01.000Z",
+    updatedAt: "2026-03-18T15:30:02.000Z"
+  };
+
+  fs.writeFileSync(logFile, "[2026-03-18T15:30:00.000Z] Starting Codex Task.\n", "utf8");
+  fs.writeFileSync(path.join(jobsDir, `${id}.json`), `${JSON.stringify(job, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify({ version: 1, config: { stopReviewGate: false }, jobs: [job] }, null, 2)}\n`,
+    "utf8"
+  );
+
+  return { stateDir, jobsDir, job, logFile };
+}
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -1792,6 +1825,84 @@ test("status --wait times out cleanly when a job is still active", () => {
   assert.equal(payload.job.id, "task-live");
   assert.equal(payload.job.status, "running");
   assert.equal(payload.waitTimedOut, true);
+});
+
+test("status --wait reports a crashed worker instead of hanging when the worker pid is dead", () => {
+  const workspace = makeTempDir();
+  const { stateDir } = seedRunningTaskJob(workspace, { id: "task-dead-wait", pid: 987654321 });
+
+  const result = spawnSync(
+    process.execPath,
+    [SCRIPT, "status", "task-dead-wait", "--wait", "--timeout-ms", "600000", "--json"],
+    {
+      cwd: workspace,
+      encoding: "utf8",
+      timeout: 3000,
+      windowsHide: true
+    }
+  );
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "status --wait hung waiting for a dead worker pid");
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-dead-wait");
+  assert.equal(payload.job.status, "failed");
+  assert.match(payload.job.errorMessage, /background worker exited before completing/);
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const job = state.jobs.find((candidate) => candidate.id === "task-dead-wait");
+  assert.equal(job.status, "failed");
+  assert.equal(job.pid, null);
+  assert.match(job.errorMessage, /background worker exited before completing/);
+});
+
+test("status (no --wait) reconciles a dead-worker job to failed", () => {
+  const workspace = makeTempDir();
+  const { stateDir } = seedRunningTaskJob(workspace, { id: "task-dead-nowait", pid: 987654321 });
+
+  const result = run("node", [SCRIPT, "status", "task-dead-nowait", "--json"], {
+    cwd: workspace
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-dead-nowait");
+  assert.equal(payload.job.status, "failed");
+  assert.match(payload.job.errorMessage, /background worker exited before completing/);
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const job = state.jobs.find((candidate) => candidate.id === "task-dead-nowait");
+  assert.equal(job.status, "failed");
+  assert.equal(job.pid, null);
+  assert.match(job.errorMessage, /background worker exited before completing/);
+});
+
+test("status --wait keeps waiting when the active worker pid is alive", () => {
+  const workspace = makeTempDir();
+  const { stateDir } = seedRunningTaskJob(workspace, { id: "task-live-pid", pid: process.pid });
+
+  const result = spawnSync(
+    process.execPath,
+    [SCRIPT, "status", "task-live-pid", "--wait", "--timeout-ms", "60", "--json"],
+    {
+      cwd: workspace,
+      encoding: "utf8",
+      timeout: 3000,
+      windowsHide: true
+    }
+  );
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "status --wait did not honor the short timeout");
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.id, "task-live-pid");
+  assert.equal(payload.job.status, "running");
+  assert.equal(payload.waitTimedOut, true);
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const job = state.jobs.find((candidate) => candidate.id === "task-live-pid");
+  assert.equal(job.status, "running");
+  assert.equal(job.pid, process.pid);
 });
 
 test("result returns the stored output for the latest finished job by default", () => {
