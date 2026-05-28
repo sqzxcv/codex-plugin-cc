@@ -1267,6 +1267,30 @@ async function handleShift(argv) {
   const diffFull = spawnSync("git", ["diff", "HEAD"], { cwd, encoding: "utf8" });
   const logRecent = spawnSync("git", ["log", "--oneline", "-10"], { cwd, encoding: "utf8" });
 
+  const untrackedResult = spawnSync(
+    "git", ["ls-files", "--others", "--exclude-standard"], { cwd, encoding: "utf8" }
+  );
+  const untrackedFiles = (untrackedResult.stdout ?? "").trim().split("\n").filter(Boolean);
+
+  // Build untracked diff by running git diff --no-index /dev/null <file> for each
+  const untrackedDiffParts = [];
+  for (const file of untrackedFiles.slice(0, 20)) {
+    const fileDiff = spawnSync("git", ["diff", "--no-index", "/dev/null", file], { cwd, encoding: "utf8" });
+    if (fileDiff.stdout) untrackedDiffParts.push(fileDiff.stdout.trim());
+  }
+
+  const statBlock = [
+    (diffStat.stdout ?? "").trim() || "",
+    untrackedFiles.length > 0
+      ? `\nUntracked files:\n${untrackedFiles.map((f) => `  ${f}`).join("\n")}`
+      : ""
+  ].join("").trim() || "(no changes)";
+
+  const fullDiffBlock = [
+    (diffFull.stdout ?? "").trim(),
+    ...untrackedDiffParts
+  ].filter(Boolean).join("\n") || "(no diff)";
+
   const mdLines = [
     `# Codex Shift — ${now}`,
     "",
@@ -1277,12 +1301,12 @@ async function handleShift(argv) {
     "",
     "## Changed Files",
     "```",
-    (diffStat.stdout ?? "").trim() || "(no changes)",
+    statBlock,
     "```",
     "",
     "## Full Diff",
     "```diff",
-    (diffFull.stdout ?? "").trim() || "(no diff)",
+    fullDiffBlock,
     "```"
   ];
 

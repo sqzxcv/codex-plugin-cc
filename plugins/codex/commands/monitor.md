@@ -24,6 +24,11 @@ Return stdout verbatim. Stop here — do not check sessions, do not ask anything
 
 ## `--resume` or `--resume-session` flag present — check sessions first
 
+Extract any runtime flags from `$ARGUMENTS` to forward (everything except `--resume` and `--resume-session <value>`):
+- `--model <value>` if present → append `--model <value>` to every command below
+- `--effort <value>` if present → append `--effort <value>` to every command below
+
+
 Run:
 ```bash
 CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor --list-sessions --json
@@ -33,12 +38,15 @@ Parse `sessions` from the JSON output.
 
 **0 sessions** — no history yet, start fresh:
 ```bash
-CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor
+
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor [--model <value>] [--effort <value>]
 ```
 
 **1 session** — auto-resume it, no question needed:
 ```bash
-CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor --resume-session <that-session-id>
+
+=======
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor --resume-session <that-session-id> [--model <value>] [--effort <value>]
 ```
 
 **2+ sessions** — use `AskUserQuestion` exactly once. Options:
@@ -48,11 +56,12 @@ CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/c
 - Last option always: label `Start a fresh session`, description `"Begin a new context."`
 
 After the user picks:
-- Fresh → run without resume flags
-- A session → run with `--resume-session <chosen-id>`
+
+- Fresh → run without resume flags (but keep `--model`/`--effort` if supplied)
+- A session → run with `--resume-session <chosen-id>` (and keep `--model`/`--effort` if supplied)
 
 ```bash
-CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor --resume-session <chosen-id>
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" monitor --resume-session <chosen-id> [--model <value>] [--effort <value>]
 ```
 
 Return stdout verbatim.
