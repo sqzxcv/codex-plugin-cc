@@ -1341,7 +1341,7 @@ async function handleShift(argv) {
   let preSendOk = false;
   let targetThreadId = threadId;
   if (options.launch && threadId) {
-    process.stdout.write("Sending context to Codex...\n");
+    process.stderr.write("Sending context to Codex...\n");
     try {
       ensureCodexAvailable(cwd);
       const result = await runAppServerTurn(workspaceRoot, {
@@ -1352,9 +1352,9 @@ async function handleShift(argv) {
       });
       targetThreadId = result.threadId ?? threadId;
       preSendOk = true;
-      process.stdout.write("Context delivered. Opening terminal...\n");
+      process.stderr.write("Context delivered. Opening terminal...\n");
     } catch (err) {
-      process.stdout.write(`Note: could not pre-send context (${err.message}). Paste it manually.\n`);
+      process.stderr.write(`Note: could not pre-send context (${err.message}). Paste it manually.\n`);
     }
   }
 
