@@ -60,6 +60,7 @@ import {
   mergeAllShiftSessions,
   readShiftHistory,
   readShiftCompact,
+  setShiftSessionClaudeId,
   setShiftSessionCodexJobId
 } from "./lib/shift-history.mjs";
 import {
@@ -1107,8 +1108,11 @@ async function handleMonitor(argv) {
   });
   const { payload } = enqueueBackgroundTask(cwd, job, request);
 
-  // Track the new job against this shift session so future resumes reuse the thread
+  // Track the new job and the current Claude session against this shift session.
+  // The Stop hook uses the Claude session ID to avoid recording turns from
+  // unrelated sessions that happen to share the same workspace.
   setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, job.id);
+  setShiftSessionClaudeId(workspaceRoot, shiftSessionId, getCurrentClaudeSessionId());
 
   const modeLabel = isResumed
     ? prevCodexThreadId

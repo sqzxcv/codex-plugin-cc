@@ -16,6 +16,7 @@ import process from "node:process";
 import {
   appendShiftEntry,
   buildShiftEntry,
+  getActiveShiftClaudeSessionId,
   getActiveShiftSessionId,
   readShiftHistory
 } from "./lib/shift-history.mjs";
@@ -69,6 +70,12 @@ function main() {
   // Only record if /codex:monitor has been run and created an active session
   const shiftSessionId = getActiveShiftSessionId(workspaceRoot);
   if (!shiftSessionId) return;
+
+  // Only record turns from the Claude session that started or resumed this monitor.
+  // If the stored ID is missing (old sessions before this feature) we allow recording
+  // for backwards compatibility. If it is present and doesn't match, skip silently.
+  const storedClaudeSessionId = getActiveShiftClaudeSessionId(workspaceRoot);
+  if (storedClaudeSessionId && input.session_id && storedClaudeSessionId !== input.session_id) return;
 
   // Turn index = number of entries already recorded for this session
   const existing = readShiftHistory(workspaceRoot, shiftSessionId);

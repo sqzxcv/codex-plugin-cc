@@ -128,6 +128,31 @@ export function setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, codexJo
 }
 
 /**
+ * Record which Claude session_id started (or resumed) a shift session.
+ * The Stop hook uses this to skip appending turns from unrelated Claude sessions.
+ */
+export function setShiftSessionClaudeId(workspaceRoot, shiftSessionId, claudeSessionId) {
+  if (!claudeSessionId) return;
+  const existing = readShiftActive(workspaceRoot);
+  if (!existing) return;
+  const updatedSessions = (existing.sessions ?? []).map((s) =>
+    s.id === shiftSessionId ? { ...s, claudeSessionId } : s
+  );
+  writeShiftActive(workspaceRoot, { ...existing, sessions: updatedSessions });
+}
+
+/**
+ * Return the Claude session_id stored for the currently active shift session,
+ * or null if none was recorded (pre-existing sessions or session ID unavailable).
+ */
+export function getActiveShiftClaudeSessionId(workspaceRoot) {
+  const active = readShiftActive(workspaceRoot);
+  if (!active?.activeShiftSessionId) return null;
+  const session = (active.sessions ?? []).find((s) => s.id === active.activeShiftSessionId);
+  return session?.claudeSessionId ?? null;
+}
+
+/**
  * List all known shift sessions for this workspace, newest first.
  * Includes turnCount derived from the JSONL file.
  */
