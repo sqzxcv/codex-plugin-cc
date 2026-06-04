@@ -191,7 +191,13 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       env: this.options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
-      windowsHide: true
+      windowsHide: true,
+      // On POSIX, give the child its own process group so the whole subtree
+      // (codex app-server + any MCP servers it spawns) can be reaped via
+      // terminateProcessTree's `kill(-pid)` group signal. Without this the
+      // child shares the parent's group, `kill(-pid)` returns ESRCH, and the
+      // MCP grandchildren are orphaned to init on shutdown.
+      detached: process.platform !== "win32"
     });
 
     this.proc.stdout.setEncoding("utf8");
@@ -241,18 +247,16 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.proc.stdin.end();
       setTimeout(() => {
         if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          // On Windows with shell: true, the direct child is cmd.exe.
-          // Use terminateProcessTree to kill the entire tree including
-          // the grandchild node process.
-          if (process.platform === "win32") {
-            try {
-              terminateProcessTree(this.proc.pid);
-            } catch {
-              // Best-effort cleanup inside an unref'd timer — swallow errors
-              // to avoid crashing the host process during shutdown.
-            }
-          } else {
-            this.proc.kill("SIGTERM");
+          // Reap the entire process tree on every platform. The direct child
+          // spawns grandchildren that must also be terminated: on Windows the
+          // shell wrapper (cmd.exe) and its node child, and on POSIX the codex
+          // app-server's MCP servers. A bare `kill(SIGTERM)` on the direct
+          // child leaves those grandchildren orphaned to init.
+          try {
+            terminateProcessTree(this.proc.pid);
+          } catch {
+            // Best-effort cleanup inside an unref'd timer — swallow errors
+            // to avoid crashing the host process during shutdown.
           }
         }
       }, 50).unref?.();
