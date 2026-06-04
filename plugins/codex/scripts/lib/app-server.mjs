@@ -192,12 +192,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
       windowsHide: true,
-      // On POSIX, give the child its own process group so the whole subtree
-      // (codex app-server + any MCP servers it spawns) can be reaped via
-      // terminateProcessTree's `kill(-pid)` group signal. Without this the
-      // child shares the parent's group, `kill(-pid)` returns ESRCH, and the
-      // MCP grandchildren are orphaned to init on shutdown.
-      detached: process.platform !== "win32"
+      // When a supervising parent opts in, give the child its own process
+      // group on POSIX so the whole subtree (codex app-server + any MCP
+      // servers it spawns) can be reaped via terminateProcessTree's
+      // `kill(-pid)` group signal. Only callers that install their own
+      // SIGINT/SIGTERM handlers and call close() (e.g. the broker) request
+      // this — for an unsupervised foreground client we must NOT detach, or a
+      // terminal interrupt would orphan the group instead of signalling it.
+      detached: process.platform !== "win32" && this.options.detachProcessGroup === true
     });
 
     this.proc.stdout.setEncoding("utf8");

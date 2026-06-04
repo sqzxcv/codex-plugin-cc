@@ -52,6 +52,14 @@ export interface CodexAppServerClientOptions {
   brokerEndpoint?: string;
   disableBroker?: boolean;
   reuseExistingBroker?: boolean;
+  /**
+   * Spawn the app-server in its own process group (POSIX) so the whole
+   * subtree (codex + MCP children) can be reaped via a group signal on
+   * close(). Only set this from a supervising parent that installs its own
+   * SIGINT/SIGTERM handlers; an unsupervised foreground client must leave it
+   * unset so a terminal interrupt still reaches the child via the group.
+   */
+  detachProcessGroup?: boolean;
 }
 
 export interface AppServerMethodMap {

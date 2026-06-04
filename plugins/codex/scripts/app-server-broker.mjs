@@ -65,7 +65,14 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
-  const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+  // The broker installs SIGINT/SIGTERM handlers (below) that call
+  // shutdown() -> appClient.close(), so it can safely supervise a detached
+  // app-server process group and reap the whole subtree (codex + MCP) on
+  // termination.
+  const appClient = await CodexAppServerClient.connect(cwd, {
+    disableBroker: true,
+    detachProcessGroup: true
+  });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
