@@ -1111,7 +1111,9 @@ async function handleMonitor(argv) {
   // Track the new job and the current Claude session against this shift session.
   // The Stop hook uses the Claude session ID to avoid recording turns from
   // unrelated sessions that happen to share the same workspace.
-  setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, job.id);
+  // Pass prevCodexThreadId so the session record retains access to the previous
+  // thread while the new job is still queued and has not yet reported its threadId.
+  setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, job.id, prevCodexThreadId);
   setShiftSessionClaudeId(workspaceRoot, shiftSessionId, getCurrentClaudeSessionId());
 
   const modeLabel = isResumed
@@ -1254,8 +1256,12 @@ async function handleShift(argv) {
       const trackedJob = readStoredJob(workspaceRoot, chosenSession.codexJobId);
       threadId = trackedJob?.threadId ?? null;
     }
-    // If still null the monitor hasn't reported a thread yet — leave threadId null
-    // and let the output below tell the user rather than using an unrelated thread.
+    // The new job may still be queued and have no threadId yet. Fall back to the
+    // previous thread that was preserved when the resume job was enqueued, so
+    // /codex:shift remains usable immediately after /codex:monitor --resume.
+    if (!threadId && chosenSession.prevCodexThreadId) {
+      threadId = chosenSession.prevCodexThreadId;
+    }
   } else {
     // Merge-all mode: search all sessions newest-first, then fall back to current session
     for (const s of allSessions) {

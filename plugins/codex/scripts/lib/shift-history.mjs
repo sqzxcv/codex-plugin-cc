@@ -117,13 +117,20 @@ export function getActiveShiftSessionId(workspaceRoot) {
 /**
  * Attach a Codex job ID to a shift session so that resume can reuse the same
  * Codex thread instead of spawning a new one each time.
+ *
+ * When prevCodexThreadId is supplied (a resume that already had a thread), it is
+ * stored alongside the new job so that /codex:shift can fall back to that thread
+ * while the replacement job is still queued and has not yet reported its own threadId.
  */
-export function setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, codexJobId) {
+export function setShiftSessionCodexJobId(workspaceRoot, shiftSessionId, codexJobId, prevCodexThreadId = null) {
   const existing = readShiftActive(workspaceRoot);
   if (!existing) return;
-  const updatedSessions = (existing.sessions ?? []).map((s) =>
-    s.id === shiftSessionId ? { ...s, codexJobId } : s
-  );
+  const updatedSessions = (existing.sessions ?? []).map((s) => {
+    if (s.id !== shiftSessionId) return s;
+    const updated = { ...s, codexJobId };
+    if (prevCodexThreadId) updated.prevCodexThreadId = prevCodexThreadId;
+    return updated;
+  });
   writeShiftActive(workspaceRoot, { ...existing, sessions: updatedSessions });
 }
 
