@@ -126,8 +126,14 @@ async function main() {
     for (const socket of sockets) {
       socket.end();
     }
-    await appClient.close().catch(() => {});
+    // Stop accepting new connections BEFORE closing the upstream app-server. On
+    // an idle self-shutdown a new task may connect at the teardown boundary;
+    // closing the listener first means that client is either served by the
+    // still-open appClient (during drain) or refused with ECONNREFUSED — which
+    // the companion retries into a fresh broker — rather than accepted and then
+    // failed against a closed app-server (an error withAppServer does not retry).
     await new Promise((resolve) => server.close(resolve));
+    await appClient.close().catch(() => {});
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
       fs.unlinkSync(listenTarget.path);
     }

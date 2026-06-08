@@ -373,6 +373,12 @@ rl.on("line", (line) => {
 	          // (a start RPC that hangs before any ACK or notification arrives).
 	          break;
 	        }
+	        if (BEHAVIOR === "start-rejects") {
+	          // Reject turn/start before any ACK: exercises the pre-ACK reject path
+	          // (the real error must surface, with no unhandled rejection).
+	          send({ id: message.id, error: { code: -32000, message: "fake start rejection (pre-ACK)" } });
+	          break;
+	        }
 	        const thread = ensureThread(state, message.params.threadId);
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")

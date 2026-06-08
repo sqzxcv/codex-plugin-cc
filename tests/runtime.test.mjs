@@ -2213,3 +2213,30 @@ test("task fails fast when the start RPC itself never replies (pre-ACK watchdog)
   assert.doesNotMatch(out, /UnhandledPromiseRejection|Unhandled rejection/i);
   assert.ok(elapsedMs < 30000, `expected a fast pre-ACK stall failure, took ${elapsedMs}ms`);
 });
+
+test("task surfaces a start RPC rejection without an unhandled rejection (pre-ACK)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "start-rejects");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "do something"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_BROKER_IDLE_MS: "1000",
+      // A regression would manifest as the exit guard rejecting unobserved.
+      NODE_OPTIONS: "--unhandled-rejections=throw"
+    }
+  });
+
+  // The real start-RPC error must surface, and the unobserved-guard regression
+  // must not reappear as an unhandled rejection.
+  assert.notEqual(result.status, 0);
+  const out = `${result.stdout}\n${result.stderr}`;
+  assert.match(out, /fake start rejection|pre-ACK/i);
+  assert.doesNotMatch(out, /UnhandledPromiseRejection|Unhandled rejection/i);
+});
