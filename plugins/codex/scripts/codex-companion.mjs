@@ -423,6 +423,59 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
+
+  // Nothing to review. The common trigger is running on a clean working tree
+  // while sitting ON the default branch: the branch comparison resolves
+  // merge-base == HEAD, so the diff is empty. Feeding an empty diff to the
+  // model just burns reasoning tokens and returns nothing useful (it cannot
+  // find issues in code that did not change). Short-circuit to an approve
+  // verdict without calling the model.
+  if (context.fileCount === 0) {
+    const emptyVerdict = {
+      verdict: "approve",
+      summary: `No changes to review for ${target.label}.`,
+      findings: [],
+      next_steps: []
+    };
+    const parsed = {
+      parsed: emptyVerdict,
+      parseError: null,
+      rawOutput: JSON.stringify(emptyVerdict)
+    };
+    const payload = {
+      review: reviewName,
+      target,
+      threadId: null,
+      context: {
+        repoRoot: context.repoRoot,
+        branch: context.branch,
+        summary: context.summary
+      },
+      codex: { status: 0, stderr: "", stdout: "", reasoning: [] },
+      result: parsed.parsed,
+      rawOutput: parsed.rawOutput,
+      parseError: null,
+      failed: false,
+      failureMessage: null,
+      reasoningSummary: []
+    };
+    return {
+      exitStatus: 0,
+      threadId: null,
+      turnId: null,
+      payload,
+      rendered: renderReviewResult(parsed, {
+        reviewLabel: reviewName,
+        targetLabel: target.label,
+        reasoningSummary: []
+      }),
+      summary: emptyVerdict.summary,
+      jobTitle: `Codex ${reviewName}`,
+      jobClass: "review",
+      targetLabel: target.label
+    };
+  }
+
   let result;
   if (context.inputMode === "self-collect") {
     const investigatePrompt = buildAdversarialInvestigatePrompt(context, focusText);
@@ -455,20 +508,37 @@ async function executeReviewRun(request) {
   // otherwise the leftover prose would be JSON-parsed into a misleading
   // "invalid JSON" error, or a recovered valid verdict would be discarded.
   const runErrored = Boolean(result.error) || result.status !== 0;
+  const hasFinalMessage = Boolean(String(result.finalMessage ?? "").trim());
   const structured = parseStructuredOutput(result.finalMessage, {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
-  const parsed = (runErrored && !structured.parsed)
-    ? {
-        parsed: null,
-        parseError: null,
-        failed: true,
-        failureMessage:
-          result.error?.message ?? result.stderr ?? "Codex run failed before producing output.",
-        rawOutput: result.finalMessage ?? ""
-      }
-    : structured;
+  let parsed;
+  if (runErrored && !structured.parsed) {
+    parsed = {
+      parsed: null,
+      parseError: null,
+      failed: true,
+      failureMessage:
+        result.error?.message ?? result.stderr ?? "Codex run failed before producing output.",
+      rawOutput: result.finalMessage ?? ""
+    };
+  } else if (!hasFinalMessage && !structured.parsed) {
+    // The turn completed (status 0, no error) but emitted no agent message —
+    // only reasoning, or nothing at all. This is NOT a malformed-JSON parse
+    // error (there is nothing to parse); reporting it as one renders an empty
+    // "- Parse error:" line. Flag it as a no-content failure so the renderer
+    // states the run could not complete and surfaces any reasoning instead.
+    parsed = {
+      parsed: null,
+      parseError: null,
+      failed: true,
+      failureMessage: "Codex completed the turn but returned no review content.",
+      rawOutput: ""
+    };
+  } else {
+    parsed = structured;
+  }
   const payload = {
     review: reviewName,
     target,

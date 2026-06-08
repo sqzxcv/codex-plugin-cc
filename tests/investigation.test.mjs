@@ -646,6 +646,21 @@ function makeInlineGitFixture() {
   return root;
 }
 
+function makeCleanDefaultBranchGitFixture() {
+  // A clean working tree sitting ON the default branch (main). resolveReviewTarget
+  // falls back to a branch diff against the detected default (main) — but HEAD IS
+  // main, so merge-base == HEAD and the diff is empty. Nothing to review.
+  const root = mkdtempSync(path.join(tmpdir(), "codex-empty-diff-test-"));
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+  spawnSync("git", ["config", "user.name", "Test"], { cwd: root });
+  spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+  writeFileSync(path.join(root, "README.md"), "# repo\n");
+  spawnSync("git", ["add", "."], { cwd: root });
+  spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+  return root;
+}
+
 function runCompanion(args, env) {
   return spawnSync("node", [COMPANION_PATH, ...args], {
     env: { ...process.env, ...env },
@@ -703,6 +718,72 @@ test("self-collect path uses runAppServerInvestigation end-to-end", async () => 
     assert.equal(payload.investigation.turnCount, 2);
     assert.equal(payload.investigation.truncated, false);
     assert.equal(payload.result?.verdict, "needs-attention");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("inline run that completes with no message renders as no-content, not a fake parse error (e2e)", async () => {
+  // Reproduces the production failure (thread 019ea22a): a status-0 turn that
+  // emitted only reasoning and no agent message. finalMessage was "", but the
+  // run did NOT error — so the old code skipped the `failed` branch, ran the
+  // empty string through parseStructuredOutput's `!rawOutput` path, and
+  // produced an EMPTY parseError. The user saw "Codex did not return valid
+  // structured JSON / - Parse error:" with nothing after the colon. An empty
+  // completed run is a no-content result, NOT a malformed-JSON parse error.
+  const cwd = makeInlineGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Single inline turn that completes with NO finalAnswer => empty message,
+    // status 0, no error (the fake emits turn/completed with no agentMessage).
+    fake.queueTurnResponse({ commands: [], finalAnswer: null });
+
+    const result = runCompanion(
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--json"],
+      fake.env
+    );
+
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.failed, true, "an empty completed run must be flagged failed");
+    assert.equal(payload.parseError, null, "must NOT fabricate a JSON parse error for empty output");
+    assert.match(
+      payload.failureMessage ?? "",
+      /no review content|no final message|returned no/i,
+      "failure reason must explain the empty output honestly"
+    );
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("clean repo on the default branch short-circuits without calling the model (e2e)", async () => {
+  // Reproduces the empty-diff trigger: running adversarial-review on a clean
+  // working tree while sitting ON the default branch makes the branch
+  // comparison resolve merge-base == HEAD, i.e. an empty diff. The old code
+  // fed that empty diff to the model, which burned reasoning tokens and
+  // returned nothing. With nothing to review there is no reason to call the
+  // model at all — the run should short-circuit to an approve verdict.
+  const cwd = makeCleanDefaultBranchGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Queue a turn so that IF the model is (wrongly) called, we can detect it.
+    fake.queueTurnResponse({
+      finalAnswer: { text: JSON.stringify({ verdict: "approve", summary: "x", findings: [], next_steps: [] }) }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review", "--cwd", cwd, "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.result?.verdict, "approve", "an empty diff should short-circuit to approve");
+
+    const starts = fake.requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 0, "no model turn should be started when there is nothing to review");
   } finally {
     fake.close();
     rmSync(cwd, { recursive: true, force: true });

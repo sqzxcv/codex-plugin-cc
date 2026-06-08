@@ -261,7 +261,13 @@ test("adversarial review accepts the same base-branch targeting as review", () =
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
   run("git", ["add", "src/app.js"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
+  // Commit the change on a feature branch so `--base main` resolves a NON-empty
+  // range. (A change left uncommitted on main is invisible to branch scope:
+  // merge-base == HEAD, the diff is empty, and there is nothing to review.)
+  run("git", ["checkout", "-b", "feature/base-target"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "tweak"], { cwd: repo });
 
   const result = run("node", [SCRIPT, "adversarial-review", "--base", "main"], {
     cwd: repo,
