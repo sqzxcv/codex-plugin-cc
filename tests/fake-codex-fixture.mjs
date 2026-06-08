@@ -368,6 +368,11 @@ rl.on("line", (line) => {
       }
 
 	      case "turn/start": {
+	        if (BEHAVIOR === "start-hangs") {
+	          // Never reply to turn/start: exercises the client's pre-ACK watchdog
+	          // (a start RPC that hangs before any ACK or notification arrives).
+	          break;
+	        }
 	        const thread = ensureThread(state, message.params.threadId);
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")

@@ -624,7 +624,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     throw client.exitError ?? new Error("codex app-server exited before the turn completed.");
   });
 
-  try {
+  // Wrap the start RPC and response processing so the guards also cover a start
+  // request that hangs or rejects before the turn is ever established, and so
+  // every guard is observed by Promise.race from the outset.
+  const work = (async () => {
     const response = await startRequest();
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
@@ -646,11 +649,17 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       completeTurn(state, response.turn);
     }
 
-    // state.completion wins under normal operation; the guards only fire on a
-    // wedge, an over-long turn, or app-server death. Promise.race attaches a
-    // handler to every racer, so a guard rejecting after the race already
-    // settled does not surface as an unhandledRejection.
-    return await Promise.race([state.completion, ceiling, stall, exit]);
+    return await state.completion;
+  })();
+
+  try {
+    // `work` wins under normal operation; the guards only fire on a wedge, an
+    // over-long turn, or app-server death — including a start RPC that hangs or
+    // rejects before the turn is established. Promise.race attaches a handler to
+    // every racer up front, so a guard that rejects (even before the start RPC
+    // returns, or after the race has settled) is always handled and never
+    // surfaces as an unhandledRejection.
+    return await Promise.race([work, ceiling, stall, exit]);
   } finally {
     clearCompletionTimer(state);
     if (ceilingTimer) {

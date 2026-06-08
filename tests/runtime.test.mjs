@@ -2181,3 +2181,35 @@ test("broker self-shuts-down after the idle window with no clients", async () =>
 
   assert.equal(exitCode, 0);
 });
+
+test("task fails fast when the start RPC itself never replies (pre-ACK watchdog)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "start-hangs");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const start = Date.now();
+  const result = run("node", [SCRIPT, "task", "do something"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_TURN_STALL_MS: "500",
+      CODEX_COMPANION_BROKER_IDLE_MS: "1000",
+      // Surface any unhandled rejection as a crash so a regression in guard
+      // observation is caught rather than silently warned.
+      NODE_OPTIONS: "--unhandled-rejections=throw"
+    }
+  });
+  const elapsedMs = Date.now() - start;
+
+  // The watchdog must cover the start RPC, not just the post-ACK wait, and must
+  // not leak an unhandled rejection from the unobserved guards.
+  assert.notEqual(result.status, 0);
+  const out = `${result.stdout}\n${result.stderr}`;
+  assert.match(out, /no activity|stall/i);
+  assert.doesNotMatch(out, /UnhandledPromiseRejection|Unhandled rejection/i);
+  assert.ok(elapsedMs < 30000, `expected a fast pre-ACK stall failure, took ${elapsedMs}ms`);
+});
