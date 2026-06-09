@@ -744,6 +744,19 @@ function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 
+// A turn can complete with usable output yet still carry a stale transient
+// `error` (e.g. "Reconnecting... 1/5") that buildResultStatus turned into a
+// non-zero status. Callers that produced a usable result should report success.
+// `usableText` is the per-caller "did we get output" signal: finalMessage for
+// tasks, reviewText for native review. buildResultStatus and the runners are
+// intentionally left alone so result.status semantics stay stable for the
+// adversarial path (which has its own, stricter parsed-verdict compensation).
+export function resolveRunExitStatus(result, usableText) {
+  const recovered =
+    result.turn?.status === "completed" && Boolean(String(usableText ?? "").trim());
+  return recovered ? 0 : result.status;
+}
+
 const BUILTIN_PROVIDER_LABELS = new Map([
   ["openai", "OpenAI"],
   ["ollama", "Ollama"],

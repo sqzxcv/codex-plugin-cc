@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { setupFakeCodex } from "./fake-codex-fixture.mjs";
-import { resolveReviewTurnIdleTimeoutMs, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
+import { resolveReviewTurnIdleTimeoutMs, resolveRunExitStatus, runAppServerTurn } from "../plugins/codex/scripts/lib/codex.mjs";
 import { makeTempDir } from "./helpers.mjs";
 
 test("resolveReviewTurnIdleTimeoutMs defaults the review watchdog and honors explicit values", () => {
@@ -161,4 +161,42 @@ test("queue-driven fake: soft error (turnError) is captured", async () => {
   } finally {
     handle.close();
   }
+});
+
+test("resolveRunExitStatus treats a completed turn with usable text as success despite a stale error", () => {
+  // Recovered transient: turn completed, has usable text, but result.status is 1
+  // (buildResultStatus saw the stale `error`). Must resolve to 0.
+  assert.equal(
+    resolveRunExitStatus({ turn: { status: "completed" }, status: 1 }, "ALLOW: looks fine"),
+    0,
+    "completed turn with usable text overrides the stale non-zero status"
+  );
+
+  // Genuine failure: no usable text => keep the raw status.
+  assert.equal(
+    resolveRunExitStatus({ turn: { status: "completed" }, status: 1 }, "   "),
+    1,
+    "completed turn with no usable text keeps the failure status"
+  );
+
+  // Genuine failure: turn did not complete => keep the raw status even with text.
+  assert.equal(
+    resolveRunExitStatus({ turn: { status: "failed" }, status: 1 }, "some text"),
+    1,
+    "non-completed turn keeps the failure status"
+  );
+
+  // Clean success: status already 0 => stays 0.
+  assert.equal(
+    resolveRunExitStatus({ turn: { status: "completed" }, status: 0 }, "done"),
+    0,
+    "a clean success stays 0"
+  );
+
+  // Missing turn => not recovered => raw status.
+  assert.equal(
+    resolveRunExitStatus({ turn: null, status: 1 }, "text"),
+    1,
+    "absent turn cannot be recovered; keep the raw status"
+  );
 });
