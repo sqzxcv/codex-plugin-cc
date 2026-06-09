@@ -140,7 +140,12 @@ the re-purposed `completionTimer` field — no separate handle is introduced.)
 4. **Quiet timer re-arms** on every belonging item/message, so it fires only
    after genuine silence. The window is a module constant (default ~15s) but
    **injectable via options** (mirroring `turnIdleTimeoutMs`) so tests are
-   instant and deterministic.
+   instant and deterministic. The override is also readable from the
+   `CODEX_INFERRED_COMPLETION_QUIET_MS` env var. Unlike the idle watchdog (which
+   has a user-facing `--turn-idle-timeout` flag), this knob is **deliberately
+   kept internal** — it is a test/escape-hatch override, not plumbed through the
+   companion CLI, since the ~15s default is correct for production and users
+   should not need to tune it.
 
 This preserves the subagent / collab hang that inference was added to prevent: a
 subagent turn that never emits a main-thread `turn/completed` still resolves,
