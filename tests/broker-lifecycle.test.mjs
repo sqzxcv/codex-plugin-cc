@@ -82,7 +82,9 @@ function startSession(cwd, { codexHome, recordFile, busy } = {}) {
   if (busy) {
     env.FAKE_BROKER_BUSY = "1";
   }
-  return ensureBrokerSession(cwd, { scriptPath: FAKE_BROKER, env, timeoutMs: 5000 });
+  // Generous readiness timeout: under parallel test-runner load a node child
+  // can take several seconds to start; 5s flaked on busy machines.
+  return ensureBrokerSession(cwd, { scriptPath: FAKE_BROKER, env, timeoutMs: 20000 });
 }
 
 test("ensureBrokerSession records CODEX_HOME and reuses the broker for the same account", async () => {
