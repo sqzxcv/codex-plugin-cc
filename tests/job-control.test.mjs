@@ -29,4 +29,13 @@ test("isStreamableProgressLine keeps progress lines and drops block titles/bodie
   assert.equal(isStreamableProgressLine("the full assistant answer body line"), false);
   assert.equal(isStreamableProgressLine(""), false);
   assert.equal(isStreamableProgressLine(null), false);
+
+  // Block-body lines that merely START with a bracket must NOT be streamed —
+  // only a real ISO-8601 timestamp prefix counts as a progress entry (#372).
+  assert.equal(isStreamableProgressLine("[1] https://example.com a markdown reference"), false);
+  assert.equal(isStreamableProgressLine("[P2] a finding Codex wrote in its answer"), false);
+  assert.equal(isStreamableProgressLine('["a", "b", "c"]'), false);
+  assert.equal(isStreamableProgressLine("[TODO] fix the empty-state guard"), false);
+  // A non-Z / non-timestamp bracketed prefix is still not a progress entry.
+  assert.equal(isStreamableProgressLine("[2026-06-13] partial date only"), false);
 });
