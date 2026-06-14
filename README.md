@@ -89,7 +89,7 @@ Pass the design inline, or point at a design doc:
 /codex:critique --focus "the n is tiny — does the data even support this split?" we plan to ...
 ```
 
-It is read-only and runs in the background by default — it reads the whole repo and queries the database, so it usually runs long. Use [`/codex:status`](#codexstatus) and [`/codex:result`](#codexresult) to follow it.
+It is read-only and returns the critique directly. Because it reads the whole repo and queries the database, it usually runs long, so by default it runs as a background subagent and notifies you when the critique is ready; add `--wait` to run it inline instead.
 
 ### `/codex:adversarial-review`
 

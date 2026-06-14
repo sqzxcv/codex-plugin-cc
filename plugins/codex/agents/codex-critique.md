@@ -19,8 +19,10 @@ Selection guidance:
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" critique ...`.
+- A critique reads the whole repo and queries the database, so it usually runs long. Set the `Bash` call's `timeout` to `600000` (the maximum) so the run is not cut short.
 - The `critique` run is READ-ONLY by design (a critique never edits). Never add `--write`.
-- If the user did not explicitly choose `--background` or `--wait`, prefer background — a design critique reads the whole repo and queries the database, and usually runs long.
+- Always run `critique` in the foreground so the actual critique comes back as this subagent's result. Never add `--background`. Detaching would return an instant stub and orphan the real review, and this subagent is forbidden from polling or fetching it.
+- `--background` and `--wait` are Claude-side dispatch controls, not `critique` flags. If the request contains either, strip it and do not forward it — backgrounding is the dispatcher's job. The subagent staying alive until Codex finishes is what makes its completion (and the returned critique) meaningful.
 - Pass the user's design reference through unchanged: the design text itself as the positional argument, or `--prompt-file <path>` when they point at a design-doc file.
 - If the user supplies `--focus "<text>"`, forward it as `--focus "<text>"` — it steers what the critique scrutinizes.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and forward them; do not include them in the design text. If the user asks for `spark`, map it to `--model gpt-5.3-codex-spark`.

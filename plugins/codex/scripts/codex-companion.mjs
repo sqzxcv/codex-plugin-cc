@@ -796,10 +796,16 @@ async function handleTask(argv) {
 // Same task engine as handleTask, but the prompt wraps the user's design in the design-critique
 // template and the run is READ-ONLY (a critique never edits). The design reference is read the
 // same way a task prompt is (positional text or --prompt-file).
+//
+// Unlike `task`, critique always runs in the foreground (like the review commands): it is only
+// ever invoked by the `codex:codex-critique` subagent, so backgrounding it would detach the work
+// into an orphaned job and return an instant stub. Backgrounding a critique is a Claude-side
+// dispatch concern (run the subagent in the background). `--background`/`--wait` are parsed only
+// so they cannot leak into the design text, then ignored.
 async function handleCritique(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "focus"],
-    booleanOptions: ["json", "background"],
+    booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
     }
@@ -817,23 +823,6 @@ async function handleCritique(argv) {
     USER_FOCUS: typeof options.focus === "string" ? options.focus : ""
   });
   const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast: false });
-
-  if (options.background) {
-    ensureCodexAvailable(cwd);
-    const job = buildTaskJob(workspaceRoot, taskMetadata, false);
-    const request = buildTaskRequest({
-      cwd,
-      model,
-      effort,
-      prompt,
-      write: false,
-      resumeLast: false,
-      jobId: job.id
-    });
-    const { payload } = enqueueBackgroundTask(cwd, job, request);
-    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
-    return;
-  }
 
   const job = buildTaskJob(workspaceRoot, taskMetadata, false);
   await runForegroundCommand(
