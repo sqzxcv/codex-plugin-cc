@@ -550,6 +550,23 @@ function applyTurnNotification(state, message) {
   }
 }
 
+const DEFAULT_TURN_TIMEOUT_MS = 45 * 60 * 1000;
+
+// Wall-clock ceiling for a single app-server turn. A turn that never reports completion would
+// hang the worker forever — and because the worker pid stays alive, the liveness-reconcile in
+// job-control cannot catch it (that only reaps DEAD workers). CODEX_TURN_TIMEOUT_MS overrides; 0 disables.
+function resolveTurnTimeoutMs(options = {}) {
+  const raw = options.turnTimeoutMs ?? process.env.CODEX_TURN_TIMEOUT_MS;
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_TURN_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_TURN_TIMEOUT_MS;
+  }
+  return value;
+}
+
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
@@ -595,6 +612,40 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
 
     if (response.turn?.status && response.turn.status !== "inProgress") {
       completeTurn(state, response.turn);
+    }
+
+    const turnTimeoutMs = resolveTurnTimeoutMs(options);
+    if (turnTimeoutMs > 0) {
+      let timeoutTimer = null;
+      const timeout = new Promise((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          timeoutTimer = null;
+          reject(
+            new Error(
+              `Codex turn exceeded ${Math.round(turnTimeoutMs / 1000)}s without completing — interrupted and marked failed (set CODEX_TURN_TIMEOUT_MS=0 to disable).`
+            )
+          );
+        }, turnTimeoutMs);
+        timeoutTimer.unref?.();
+      });
+      try {
+        return await Promise.race([state.completion, timeout]);
+      } catch (error) {
+        if (state.turnId) {
+          // Best-effort: tell the app server to stop the stuck turn before we surface the failure.
+          try {
+            await client.request("turn/interrupt", {
+              threadId: state.threadId,
+              turnId: state.turnId
+            });
+          } catch {}
+        }
+        throw error;
+      } finally {
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+        }
+      }
     }
 
     return await state.completion;

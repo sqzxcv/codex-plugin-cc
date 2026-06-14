@@ -792,6 +792,56 @@ async function handleTask(argv) {
   );
 }
 
+// Design critique (the second-family, code+DB-grounded critique of a DESIGN — not a diff).
+// Same task engine as handleTask, but the prompt wraps the user's design in the design-critique
+// template and the run is READ-ONLY (a critique never edits). The design reference is read the
+// same way a task prompt is (positional text or --prompt-file).
+//
+// Unlike `task`, critique always runs in the foreground (like the review commands): it is only
+// ever invoked by the `codex:codex-critique` subagent, so backgrounding it would detach the work
+// into an orphaned job and return an instant stub. Backgrounding a critique is a Claude-side
+// dispatch concern (run the subagent in the background). `--background`/`--wait` are parsed only
+// so they cannot leak into the design text, then ignored.
+async function handleCritique(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "focus"],
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const designInput = readTaskPrompt(cwd, options, positionals);
+  requireTaskRequest(designInput, false);
+
+  const prompt = interpolateTemplate(loadPromptTemplate(ROOT_DIR, "design-critique"), {
+    DESIGN_INPUT: designInput,
+    USER_FOCUS: typeof options.focus === "string" ? options.focus : ""
+  });
+  const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast: false });
+
+  const job = buildTaskJob(workspaceRoot, taskMetadata, false);
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeTaskRun({
+        cwd,
+        model,
+        effort,
+        prompt,
+        write: false,
+        resumeLast: false,
+        jobId: job.id,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd", "job-id"]
@@ -999,6 +1049,9 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "critique":
+      await handleCritique(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);
