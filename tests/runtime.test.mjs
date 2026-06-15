@@ -300,6 +300,254 @@ test("adversarial review asks Codex to inspect larger diffs itself", () => {
   assert.doesNotMatch(state.lastTurnStart.prompt, /PROMPT_SELF_COLLECT_[ABC]/);
 });
 
+test("review --fresh starts a resumable thread and --resume reuses it for the worktree", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const fresh = run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(fresh.status, 0, fresh.stderr);
+
+  let state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsAfterFresh = state.threads.length;
+  assert.equal(
+    state.threads.some((thread) => !thread.ephemeral && String(thread.name || "").startsWith("Codex Companion Review")),
+    true,
+    "fresh review should persist a named, non-ephemeral review thread"
+  );
+  assert.doesNotMatch(state.lastTurnStart.prompt, /<continuation>/);
+
+  const resume = run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(resume.status, 0, resume.stderr);
+
+  state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.threads.length, threadsAfterFresh, "resume should reuse the thread, not create a new one");
+  assert.match(state.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume falls back to a fresh thread when the prior thread is too old", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const fresh = run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  let state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsAfterFresh = state.threads.length;
+
+  // A ~36ms recency window is far shorter than the time to spawn the resume
+  // process, so the prior thread is always "too old" to reuse here.
+  const resume = run("node", [SCRIPT, "review", "--resume", "--within-hours", "0.00001"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(resume.status, 0, resume.stderr);
+
+  state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.threads.length, threadsAfterFresh + 1, "a stale prior thread should not be reused");
+  assert.doesNotMatch(state.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume does not reuse a plain native review thread", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // Plain native review (no flag) persists a threadId but the thread is
+  // ephemeral and cannot be resumed.
+  const native = run("node", [SCRIPT, "review"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(native.status, 0, native.stderr);
+  let state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsAfterNative = state.threads.length;
+
+  const resume = run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(resume.status, 0, resume.stderr);
+
+  state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.threads.length, threadsAfterNative + 1, "resume must start a fresh thread, not reuse the native one");
+  assert.doesNotMatch(state.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume falls back to a fresh thread when the persisted thread is gone", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const fresh = run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(fresh.status, 0, fresh.stderr);
+
+  // Simulate Codex pruning/expiring the persisted thread.
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.threads = [];
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+  // resume should recover (start a fresh thread) rather than fail.
+  const resume = run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(resume.status, 0, resume.stderr);
+
+  const after = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(after.threads.length, 1, "fallback should create exactly one fresh thread");
+  // The fresh fallback thread has no prior context, so the prompt must NOT
+  // claim continuation ("reuse what you already saw").
+  assert.doesNotMatch(after.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume does not reuse a thread whose review did not complete", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const fresh = run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(fresh.status, 0, fresh.stderr);
+  let state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsAfterFresh = state.threads.length;
+
+  // Simulate the resumable review having failed: the thread id was recorded
+  // mid-run, but the review never completed.
+  const stateFile = path.join(resolveStateDir(repo), "state.json");
+  const companionState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  let mutated = false;
+  for (const job of companionState.jobs) {
+    if (job.jobClass === "review" && job.resumable && job.threadId) {
+      job.status = "failed";
+      mutated = true;
+    }
+  }
+  assert.ok(mutated, "expected a resumable review job with a thread id to mutate");
+  fs.writeFileSync(stateFile, JSON.stringify(companionState, null, 2));
+
+  // --resume must not reuse the non-completed thread; it starts a fresh one.
+  const resume = run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(resume.status, 0, resume.stderr);
+  state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.threads.length, threadsAfterFresh + 1, "a non-completed review must not be reused");
+  assert.doesNotMatch(state.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume starts fresh when the newest run did not complete, even if an older run did", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // J1 (fresh) completes on a new thread; J2 (resume) completes on the same thread.
+  assert.equal(run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  assert.equal(run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+
+  let codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsBefore = codexState.threads.length;
+
+  // Mark the NEWEST review run (the resume) as failed — it shares the thread id
+  // with the older completed run, which must NOT be selected as a fallback.
+  const stateFile = path.join(resolveStateDir(repo), "state.json");
+  const companionState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  const reviewJobs = companionState.jobs
+    .filter((j) => j.jobClass === "review" && j.resumable && j.threadId)
+    .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+  assert.ok(reviewJobs.length >= 2, "expected two resumable review jobs");
+  assert.equal(reviewJobs[0].threadId, reviewJobs[1].threadId, "both runs should share the resumed thread id");
+  for (const job of companionState.jobs) {
+    if (job.id === reviewJobs[0].id) job.status = "failed";
+  }
+  fs.writeFileSync(stateFile, JSON.stringify(companionState, null, 2));
+
+  // --resume must start a fresh thread, not fall back to the older completed run.
+  assert.equal(run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(codexState.threads.length, threadsBefore + 1, "must start a fresh thread, not reuse the interrupted one");
+  assert.doesNotMatch(codexState.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume starts fresh when a newer resumable run is still starting (no thread id yet)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  // J0: completed resumable review on a thread.
+  assert.equal(run("node", [SCRIPT, "review", "--fresh"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  let codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsBefore = codexState.threads.length;
+
+  // Inject a newer resumable review that is still running with no thread id yet
+  // (a concurrent --background run that has not emitted "Thread ready").
+  const stateFile = path.join(resolveStateDir(repo), "state.json");
+  const companionState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  companionState.jobs.unshift({
+    id: "review-starting-0001",
+    kind: "review",
+    jobClass: "review",
+    resumable: true,
+    status: "running",
+    createdAt: "2099-01-01T00:00:00.000Z",
+    updatedAt: "2099-01-01T00:00:00.000Z"
+  });
+  fs.writeFileSync(stateFile, JSON.stringify(companionState, null, 2));
+
+  // --resume must not fall back past the still-starting run to the older thread.
+  assert.equal(run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(codexState.threads.length, threadsBefore + 1, "must start a fresh thread while a newer run is still starting");
+  assert.doesNotMatch(codexState.lastTurnStart.prompt, /<continuation>/);
+});
+
+test("review --resume does not reuse an adversarial-review thread (kind-scoped)", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+
+  // An adversarial review starts a resumable adversarial thread.
+  assert.equal(run("node", [SCRIPT, "adversarial-review", "--fresh"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  let codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  const threadsBefore = codexState.threads.length;
+
+  // Plain `/codex:review --resume` must not reuse the adversarial thread.
+  assert.equal(run("node", [SCRIPT, "review", "--resume"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  codexState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(codexState.threads.length, threadsBefore + 1, "plain review must not reuse an adversarial-review thread");
+  assert.doesNotMatch(codexState.lastTurnStart.prompt, /<continuation>/);
+});
+
 test("review includes reasoning output when the app server returns it", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

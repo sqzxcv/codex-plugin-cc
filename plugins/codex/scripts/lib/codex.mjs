@@ -41,6 +41,7 @@ import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
+const REVIEW_THREAD_PREFIX = "Codex Companion Review";
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
@@ -101,6 +102,11 @@ function looksLikeVerificationCommand(command) {
 function buildTaskThreadName(prompt) {
   const excerpt = shorten(prompt, 56);
   return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
+}
+
+function buildReviewThreadName(label) {
+  const excerpt = shorten(label, 56);
+  return excerpt ? `${REVIEW_THREAD_PREFIX}: ${excerpt}` : REVIEW_THREAD_PREFIX;
 }
 
 function extractThreadId(message) {
@@ -969,16 +975,9 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let resumedThread = false;
 
-    if (options.resumeThreadId) {
-      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd, {
-        model: options.model,
-        sandbox: options.sandbox,
-        ephemeral: false
-      });
-      threadId = response.thread.id;
-    } else {
+    const startFreshThread = async () => {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
         model: options.model,
@@ -986,14 +985,45 @@ export async function runAppServerTurn(cwd, options = {}) {
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });
-      threadId = response.thread.id;
+      return response.thread.id;
+    };
+
+    if (options.resumeThreadId) {
+      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
+      try {
+        const response = await resumeThread(client, options.resumeThreadId, cwd, {
+          model: options.model,
+          sandbox: options.sandbox,
+          ephemeral: false
+        });
+        threadId = response.thread.id;
+        resumedThread = true;
+      } catch (error) {
+        // A persisted thread can be pruned/expired by Codex. When the caller
+        // opts into fallback, start a fresh thread instead of failing the run.
+        // Resume fails before any turn starts, so no tokens are wasted.
+        if (!options.resumeFallback) {
+          throw error;
+        }
+        emitProgress(
+          options.onProgress,
+          `Could not resume thread ${options.resumeThreadId}; starting a fresh thread.`,
+          "starting"
+        );
+        threadId = await startFreshThread();
+      }
+    } else {
+      threadId = await startFreshThread();
     }
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
       threadId
     });
 
-    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
+    const prompt =
+      typeof options.buildPrompt === "function"
+        ? options.buildPrompt({ resumed: resumedThread })
+        : options.prompt?.trim() || options.defaultPrompt || "";
     if (!prompt) {
       throw new Error("A prompt is required for this Codex run.");
     }
@@ -1054,6 +1084,10 @@ export function buildPersistentTaskThreadName(prompt) {
   return buildTaskThreadName(prompt);
 }
 
+export function buildPersistentReviewThreadName(label) {
+  return buildReviewThreadName(label);
+}
+
 export function parseStructuredOutput(rawOutput, fallback = {}) {
   if (!rawOutput) {
     return {
@@ -1085,4 +1119,4 @@ export function readOutputSchema(schemaPath) {
   return readJsonFile(schemaPath);
 }
 
-export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };
+export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX, REVIEW_THREAD_PREFIX };
