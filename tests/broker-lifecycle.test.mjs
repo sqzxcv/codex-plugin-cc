@@ -5,8 +5,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveStateRoot, resolveStateRoot as stateRootForTest } from "../plugins/codex/scripts/lib/state.mjs";
+import { resolveStateRoot } from "../plugins/codex/scripts/lib/state.mjs";
 import { resolveSessionId, teardownBrokersForSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { handleSessionEnd } from "../plugins/codex/scripts/session-lifecycle-hook.mjs";
+
+const stateRootForTest = resolveStateRoot;
 
 test("resolveStateRoot uses CLAUDE_PLUGIN_DATA/state when set", () => {
   const pluginData = makeTempDir();
@@ -125,5 +128,24 @@ test("teardownBrokersForSession is a no-op for empty sessionId", async () => {
   await withPluginData(async () => {
     const count = await teardownBrokersForSession("", { killProcess: () => {} });
     assert.equal(count, 0);
+  });
+});
+
+test("handleSessionEnd tears down broker even when cwd mismatches (regression #380)", async () => {
+  await withPluginData(async () => {
+    const stateRoot = stateRootForTest();
+    const sessionDir = makeTempDir();
+    const pidFile = path.join(sessionDir, "broker.pid");
+    fs.writeFileSync(pidFile, "999999999\n"); // non-existent pid, harmless to signal
+    const brokerJson = writeBrokerJson(stateRoot, "worktree-33333333deadbeef", {
+      endpoint: "unix:/tmp/codex-test-nonexistent4.sock",
+      pidFile, logFile: null, sessionDir, pid: 999999999, sessionId: "S"
+    });
+
+    // cwd is a DIFFERENT path than the broker's workspace — the cwd-based path
+    // would miss; the session-based path must still tear it down.
+    await handleSessionEnd({ cwd: makeTempDir(), session_id: "S" });
+
+    assert.equal(fs.existsSync(brokerJson), false);
   });
 });

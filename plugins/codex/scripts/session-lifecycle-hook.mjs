@@ -11,7 +11,8 @@ import {
   loadBrokerSession,
   PID_FILE_ENV,
   sendBrokerShutdown,
-  teardownBrokerSession
+  teardownBrokerSession,
+  teardownBrokersForSession
 } from "./lib/broker-lifecycle.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
@@ -78,7 +79,7 @@ function handleSessionStart(input) {
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
 }
 
-async function handleSessionEnd(input) {
+export async function handleSessionEnd(input) {
   const cwd = input.cwd || process.cwd();
   const brokerSession =
     loadBrokerSession(cwd) ??
@@ -109,6 +110,11 @@ async function handleSessionEnd(input) {
     killProcess: terminateProcessTree
   });
   clearBrokerSession(cwd);
+
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV];
+  if (sessionId) {
+    await teardownBrokersForSession(sessionId, { killProcess: terminateProcessTree });
+  }
 }
 
 async function main() {
@@ -125,7 +131,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+// Only run main() when executed directly (not when imported by tests).
+const isMain = process.argv[1] &&
+  new URL(import.meta.url).pathname === new URL(process.argv[1], import.meta.url).pathname;
+if (isMain) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}
