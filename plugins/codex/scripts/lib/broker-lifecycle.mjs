@@ -11,6 +11,15 @@ import { resolveStateDir } from "./state.mjs";
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
+const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+
+export function resolveSessionId(options = {}) {
+  if (options.sessionId) {
+    return options.sessionId;
+  }
+  const env = options.env ?? process.env;
+  return env[SESSION_ID_ENV] ?? null;
+}
 
 export function createBrokerSessionDir(prefix = "cxc-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -164,7 +173,8 @@ export async function ensureBrokerSession(cwd, options = {}) {
     pidFile,
     logFile,
     sessionDir,
-    pid: child.pid ?? null
+    pid: child.pid ?? null,
+    sessionId: resolveSessionId(options)
   };
   saveBrokerSession(cwd, session);
   return session;
