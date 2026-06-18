@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
@@ -131,9 +133,17 @@ async function main() {
   }
 }
 
+function isExecutedDirectly() {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  return fs.realpathSync(fileURLToPath(import.meta.url)) ===
+    fs.realpathSync(path.resolve(process.argv[1]));
+}
+
 // Only run main() when executed directly (not when imported by tests).
-const isMain = process.argv[1] &&
-  new URL(import.meta.url).pathname === new URL(process.argv[1], import.meta.url).pathname;
+const isMain = isExecutedDirectly();
 if (isMain) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

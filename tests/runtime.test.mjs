@@ -562,6 +562,38 @@ test("session start hook exports the Claude session id and plugin data dir for l
   );
 });
 
+test("session start hook runs when invoked through a symlinked plugin root", () => {
+  const repo = makeTempDir();
+  const linkParent = makeTempDir();
+  const pluginLink = path.join(linkParent, "codex-link");
+  fs.symlinkSync(PLUGIN_ROOT, pluginLink, process.platform === "win32" ? "junction" : "dir");
+
+  const envFile = path.join(makeTempDir(), "claude-env.sh");
+  fs.writeFileSync(envFile, "", "utf8");
+  const pluginDataDir = makeTempDir();
+  const symlinkedSessionHook = path.join(pluginLink, "scripts", "session-lifecycle-hook.mjs");
+
+  const result = run("node", [symlinkedSessionHook, "SessionStart"], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_ENV_FILE: envFile,
+      CLAUDE_PLUGIN_DATA: pluginDataDir
+    },
+    input: JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "sess-symlink",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    fs.readFileSync(envFile, "utf8"),
+    `export CODEX_COMPANION_SESSION_ID='sess-symlink'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\n`
+  );
+});
+
 test("write task output focuses on the Codex result without generic follow-up hints", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
