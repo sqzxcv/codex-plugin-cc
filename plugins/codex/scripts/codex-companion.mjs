@@ -479,6 +479,7 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
+  const persistThread = request.persistThread ?? true;
   const result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
     prompt: request.prompt,
@@ -487,8 +488,8 @@ async function executeTaskRun(request) {
     effort: request.effort,
     sandbox: request.write ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
-    persistThread: true,
-    threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
+    persistThread,
+    threadName: resumeThreadId || !persistThread ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   });
 
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
@@ -771,6 +772,26 @@ async function handleTask(argv) {
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
+    ensureCodexAvailable(cwd);
+    const execution = await executeTaskRun({
+      cwd,
+      model,
+      effort,
+      prompt,
+      write,
+      resumeLast: false,
+      jobId: null,
+      persistThread: false,
+      onProgress: createProgressReporter({ stderr: !options.json })
+    });
+    outputResult(options.json ? execution.payload : execution.rendered, options.json);
+    if (execution.exitStatus !== 0) {
+      process.exitCode = execution.exitStatus;
+    }
     return;
   }
 
