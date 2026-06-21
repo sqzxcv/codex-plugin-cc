@@ -688,7 +688,14 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       state.threadTurnIds.set(state.threadId, state.turnId);
     }
     for (const message of state.bufferedNotifications) {
-      if (belongsToTurn(state, message)) {
+      if (message.method === "thread/started" || message.method === "thread/name/updated") {
+        // Mirror the live handler: these register turn threads (e.g. subagents) and carry no
+        // turnId, so belongsToTurn would reject them. Apply and reset the watchdog here too.
+        applyTurnNotification(state, message);
+        if (!state.completed) {
+          armIdleTimer(state, idleMs);
+        }
+      } else if (belongsToTurn(state, message)) {
         applyTurnNotification(state, message);
         if (!state.completed) {
           armIdleTimer(state, idleMs);

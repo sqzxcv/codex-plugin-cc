@@ -452,7 +452,38 @@ rl.on("line", (line) => {
 	          prompt
 	        };
 	        saveState(state);
-	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+	        if (BEHAVIOR === "subagent-buffered-start") {
+          const subThread = nextThread(state, thread.cwd, true);
+          const subThreadRecord = ensureThread(state, subThread.id);
+          subThreadRecord.name = "design-challenger";
+          saveState(state);
+          // Emit the subagent thread/started BEFORE the turn/start response: the client buffers it
+          // (state.turnId is only set once the response's await continuation runs), so it is handled
+          // through the buffered-replay path rather than the live handler.
+          send({ method: "thread/started", params: { thread: { ...buildThread(subThreadRecord), name: "design-challenger", agentNickname: "design-challenger" } } });
+          send({ id: message.id, result: { turn: buildTurn(turnId) } });
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: subThread.id,
+              turnId,
+              item: { type: "agentMessage", id: "msg_sub_" + turnId, text: "Subagent analysis note.", phase: "analysis" }
+            }
+          });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: thread.id,
+              turnId,
+              item: { type: "agentMessage", id: "msg_" + turnId, text: taskPayload(prompt, false), phase: "final_answer" }
+            }
+          });
+          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+          break;
+        }
+
+        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)

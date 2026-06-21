@@ -2490,3 +2490,28 @@ test("the idle watchdog opt-out (0) leaves a stalled turn running in the backgro
   assert.equal(waitedPayload.job.status, "running");
   assert.equal(waitedPayload.waitTimedOut, true);
 });
+
+test("a buffered subagent thread-start is applied during replay so its label is registered", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "subagent-buffered-start");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "challenge with a buffered subagent start"], {
+    cwd: repo,
+    env: buildEnv(binDir),
+    timeout: 20000
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  // thread/started for the subagent arrives before the turn/start response, so it is buffered and
+  // handled through the replay path. That path must apply thread/started (like the live handler) so
+  // the subagent thread is registered with its name; otherwise the message logs under the raw id.
+  const stateDir = resolveStateDir(repo);
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
+  assert.match(log, /Subagent design-challenger/);
+});
