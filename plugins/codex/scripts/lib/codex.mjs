@@ -55,6 +55,8 @@ const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 
 export const TURN_IDLE_TIMEOUT_ENV = "CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS";
 export const DEFAULT_TURN_IDLE_TIMEOUT_MS = 900000;
+// Node's setTimeout caps delays at 2^31-1 ms; larger values overflow to 1 ms (near-immediate fire).
+const MAX_TURN_IDLE_TIMEOUT_MS = 2147483647;
 
 /**
  * Resolve the inter-event idle window (ms) after which a silent turn is salvaged.
@@ -62,8 +64,9 @@ export const DEFAULT_TURN_IDLE_TIMEOUT_MS = 900000;
  * notification that belongs to the turn. The whole trimmed value must be a decimal
  * integer of milliseconds; anything else (blank, negative, decimal, or unit-suffixed
  * like "15m" / "0ms") falls back to the default rather than parseInt's lenient numeric
- * prefix. An explicit 0 is preserved and disables the watchdog. Avoid `Number(value) ||
- * DEFAULT` here - it would turn 0 into the default.
+ * prefix. An explicit 0 is preserved and disables the watchdog; values above setTimeout's
+ * 2^31-1 ms ceiling are clamped to it. Avoid `Number(value) || DEFAULT` here - it would
+ * turn 0 into the default.
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {number}
  */
@@ -74,7 +77,10 @@ export function resolveTurnIdleMs(env = process.env) {
     return DEFAULT_TURN_IDLE_TIMEOUT_MS;
   }
   const parsed = Number.parseInt(trimmed, 10);
-  return Number.isFinite(parsed) ? parsed : DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  }
+  return Math.min(parsed, MAX_TURN_IDLE_TIMEOUT_MS);
 }
 
 function cleanCodexStderr(stderr) {
@@ -397,7 +403,7 @@ function armIdleTimer(state, idleMs) {
       return;
     }
     completeTurn(state, null, { inferred: true, timedOut: true });
-  }, idleMs);
+  }, Math.min(idleMs, MAX_TURN_IDLE_TIMEOUT_MS));
   state.idleTimer.unref?.();
 }
 

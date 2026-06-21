@@ -2279,6 +2279,11 @@ test("resolveTurnIdleMs parses the idle window strictly with 0 meaning disabled"
   assert.equal(resolveTurnIdleMs({ [ENV]: "0ms" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
   assert.equal(resolveTurnIdleMs({ [ENV]: "900000ms" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
   assert.equal(resolveTurnIdleMs({ [ENV]: "1.5" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  // Node's setTimeout overflows delays above 2^31-1 ms (firing in ~1 ms); clamp to that max
+  // so a very large window does not collapse into near-immediate salvage.
+  assert.equal(resolveTurnIdleMs({ [ENV]: "2147483647" }), 2147483647);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "2147483648" }), 2147483647);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "2592000000" }), 2147483647);
 });
 
 test("task salvages a stalled turn when Codex goes idle without terminal events", () => {
