@@ -24,6 +24,8 @@
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
+ *   idleTimer: ReturnType<typeof setTimeout> | null,
+ *   timedOut: boolean,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -50,6 +52,30 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+
+export const TURN_IDLE_TIMEOUT_ENV = "CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS";
+export const DEFAULT_TURN_IDLE_TIMEOUT_MS = 900000;
+
+/**
+ * Resolve the inter-event idle window (ms) after which a silent turn is salvaged.
+ * This is an inter-event gap, NOT a total-duration ceiling: it resets on every
+ * notification that belongs to the turn. Blank / non-finite / negative values fall
+ * back to the default; an explicit value (including 0, which disables the watchdog)
+ * is preserved. Avoid `Number(value) || DEFAULT` here - it would turn 0 into the default.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {number}
+ */
+export function resolveTurnIdleMs(env = process.env) {
+  const raw = env?.[TURN_IDLE_TIMEOUT_ENV];
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_TURN_IDLE_TIMEOUT_MS;
+  }
+  return parsed;
+}
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -325,6 +351,8 @@ function createTurnCaptureState(threadId, options = {}) {
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
+    idleTimer: null,
+    timedOut: false,
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -343,12 +371,43 @@ function clearCompletionTimer(state) {
   }
 }
 
+function clearIdleTimer(state) {
+  if (state.idleTimer) {
+    clearTimeout(state.idleTimer);
+    state.idleTimer = null;
+  }
+}
+
+/**
+ * (Re)arm the idle watchdog. Fires purely on silence: if no turn-belonging
+ * notification arrives within `idleMs`, the turn is salvaged as timed out.
+ * It deliberately does NOT consult pendingCollaborations/activeSubagentTurns -
+ * a subagent whose own terminal event was also dropped would never drain and
+ * would re-create the hang. Active subagents are protected by the reset surface
+ * (their streaming notifications re-arm this timer) instead. `idleMs <= 0` disables it.
+ */
+function armIdleTimer(state, idleMs) {
+  clearIdleTimer(state);
+  if (!(idleMs > 0)) {
+    return;
+  }
+  state.idleTimer = setTimeout(() => {
+    state.idleTimer = null;
+    if (state.completed) {
+      return;
+    }
+    completeTurn(state, null, { inferred: true, timedOut: true });
+  }, idleMs);
+  state.idleTimer.unref?.();
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
   }
 
   clearCompletionTimer(state);
+  clearIdleTimer(state);
   state.completed = true;
 
   if (turn) {
@@ -357,13 +416,27 @@ function completeTurn(state, turn = null, options = {}) {
       state.turnId = turn.id;
     }
   } else if (!state.finalTurn) {
-    state.finalTurn = {
-      id: state.turnId ?? "inferred-turn",
-      status: "completed"
-    };
+    if (options.timedOut) {
+      // Salvaged without a confirmed completion: report a non-success status so
+      // buildResultStatus returns 1 and the job is recorded as failed, never a
+      // false "completed". The normal drained-after-final_answer inferred path
+      // (no timedOut) keeps the "completed" status.
+      state.timedOut = true;
+      state.finalTurn = {
+        id: state.turnId ?? "inferred-turn",
+        status: "incomplete"
+      };
+    } else {
+      state.finalTurn = {
+        id: state.turnId ?? "inferred-turn",
+        status: "completed"
+      };
+    }
   }
 
-  if (options.inferred) {
+  if (options.timedOut) {
+    emitProgress(state.onProgress, "Turn salvaged: Codex stopped emitting events before confirming completion; returning the captured output.", "finalizing");
+  } else if (options.inferred) {
     emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
   }
 
@@ -559,6 +632,14 @@ function applyTurnNotification(state, message) {
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
+  const idleMs = options.turnIdleMs ?? resolveTurnIdleMs(options.env ?? process.env);
+  emitProgress(
+    state.onProgress,
+    idleMs > 0
+      ? `Turn idle watchdog armed (${idleMs}ms inter-event window).`
+      : "Turn idle watchdog disabled.",
+    "starting"
+  );
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -568,6 +649,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
 
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
       applyTurnNotification(state, message);
+      // thread/started / thread/name/updated register a (subagent) thread for THIS turn -
+      // that is live turn activity, so reset the watchdog here too. This branch returns
+      // before the belongsToTurn reset below, so the reset has to be repeated here.
+      if (!state.completed) {
+        armIdleTimer(state, idleMs);
+      }
       return;
     }
 
@@ -579,6 +666,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     applyTurnNotification(state, message);
+    // Reset the idle watchdog on every turn-belonging notification (including active
+    // subagent streaming). Do NOT reset on the forwarded !belongsToTurn branch above,
+    // or an unrelated broker session would keep a dead turn alive.
+    if (!state.completed) {
+      armIdleTimer(state, idleMs);
+    }
   });
 
   try {
@@ -591,6 +684,9 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     for (const message of state.bufferedNotifications) {
       if (belongsToTurn(state, message)) {
         applyTurnNotification(state, message);
+        if (!state.completed) {
+          armIdleTimer(state, idleMs);
+        }
       } else {
         if (previousHandler) {
           previousHandler(message);
@@ -603,9 +699,31 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       completeTurn(state, response.turn);
     }
 
-    return await state.completion;
+    // Arm the watchdog only once the turn is live (after startRequest resolved); arming
+    // before it would race a still-pending RPC that rejects on disconnect.
+    if (!state.completed) {
+      armIdleTimer(state, idleMs);
+    }
+
+    // Layer A: race normal completion against transport death. exitPromise resolves within
+    // ms when the pipe/socket dies but is never linked to state.completion, so without this
+    // race a dropped terminal event on a dead connection would hang until the idle window.
+    const outcome = await Promise.race([
+      state.completion.then((value) => ({ type: "completion", value })),
+      client.exitPromise.then(() => ({ type: "exit" }))
+    ]);
+
+    if (outcome.type === "exit") {
+      if (!state.completed) {
+        completeTurn(state, null, { inferred: true, timedOut: true });
+      }
+      return state;
+    }
+
+    return outcome.value;
   } finally {
     clearCompletionTimer(state);
+    clearIdleTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }
@@ -753,6 +871,28 @@ async function resumeThread(client, threadId, cwd, options = {}) {
 
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
+}
+
+const SALVAGE_CAPTURED_NOTE =
+  "Note: Codex stopped emitting events before confirming completion; returning the captured-so-far output, which may be incomplete.";
+const SALVAGE_EMPTY_NOTE =
+  "No verdict was salvageable - Codex went silent before producing output; re-run or inspect the thread.";
+
+/**
+ * Prefix a one-line salvage note onto a timed-out turn's body so the surface never
+ * renders a bare "failed". Two cases: captured-then-silence keeps the partial body,
+ * empty-then-silence replaces an empty body with an explicit no-verdict message.
+ * Non-timed-out bodies pass through untouched.
+ */
+function annotateSalvagedBody(body, timedOut) {
+  if (!timedOut) {
+    return body;
+  }
+  const text = typeof body === "string" ? body.trim() : "";
+  if (text) {
+    return `${SALVAGE_CAPTURED_NOTE}\n\n${body}`;
+  }
+  return SALVAGE_EMPTY_NOTE;
 }
 
 const BUILTIN_PROVIDER_LABELS = new Map([
@@ -1030,6 +1170,8 @@ export async function runAppServerReview(cwd, options = {}) {
         }),
       {
         onProgress: options.onProgress,
+        turnIdleMs: options.turnIdleMs,
+        env: options.env,
         onResponse(response, state) {
           if (response.reviewThreadId) {
             state.threadIds.add(response.reviewThreadId);
@@ -1046,9 +1188,10 @@ export async function runAppServerReview(cwd, options = {}) {
       threadId: turnState.threadId,
       sourceThreadId,
       turnId: turnState.turnId,
-      reviewText: turnState.reviewText,
+      reviewText: annotateSalvagedBody(turnState.reviewText, turnState.timedOut),
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
+      timedOut: turnState.timedOut,
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
@@ -1140,16 +1283,21 @@ export async function runAppServerTurn(cwd, options = {}) {
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null
         }),
-      { onProgress: options.onProgress }
+      {
+        onProgress: options.onProgress,
+        turnIdleMs: options.turnIdleMs,
+        env: options.env
+      }
     );
 
     return {
       status: buildResultStatus(turnState),
       threadId,
       turnId: turnState.turnId,
-      finalMessage: turnState.lastAgentMessage,
+      finalMessage: annotateSalvagedBody(turnState.lastAgentMessage, turnState.timedOut),
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
+      timedOut: turnState.timedOut,
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,

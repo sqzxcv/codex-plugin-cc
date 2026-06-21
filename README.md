@@ -283,6 +283,20 @@ Your configuration will be picked up based on:
 - project-level overrides in `.codex/config.toml`
 - project-level overrides only load when the [project is trusted](https://developers.openai.com/codex/config-advanced#project-config-files-codexconfigtoml)
 
+#### Stalled-turn salvage
+
+If Codex stops emitting events on a still-open connection without ever confirming a turn finished, the plugin would otherwise wait forever. To avoid a wedged job, a review or task is salvaged after an inter-event idle window and reported as incomplete (a non-success exit), returning whatever output was captured.
+
+This window is an inter-event gap (the time since the last event for the turn), not a total-duration limit, so a long but active turn keeps running as long as Codex keeps streaming events. It defaults to 15 minutes and can be tuned with an environment variable:
+
+```bash
+# Salvage a silent turn after 10 minutes of no events (value in milliseconds).
+export CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS=600000
+
+# Disable the watchdog entirely (a stalled turn will wait indefinitely).
+export CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS=0
+```
+
 Check out the Codex docs for more [configuration options](https://developers.openai.com/codex/config-reference).
 
 ### Moving The Work Over To Codex

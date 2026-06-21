@@ -9,6 +9,8 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import * as codexRuntime from "../plugins/codex/scripts/lib/codex.mjs";
+import { createBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -2256,4 +2258,224 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+test("resolveTurnIdleMs parses the idle window strictly with 0 meaning disabled", () => {
+  const { resolveTurnIdleMs, DEFAULT_TURN_IDLE_TIMEOUT_MS } = codexRuntime;
+  assert.equal(typeof resolveTurnIdleMs, "function");
+  assert.equal(DEFAULT_TURN_IDLE_TIMEOUT_MS, 900000);
+  const ENV = "CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS";
+  assert.equal(resolveTurnIdleMs({}), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "   " }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "not-a-number" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "-5" }), DEFAULT_TURN_IDLE_TIMEOUT_MS);
+  // 0 is an explicit, valid opt-out and must survive (not collapse to the default).
+  assert.equal(resolveTurnIdleMs({ [ENV]: "0" }), 0);
+  assert.equal(resolveTurnIdleMs({ [ENV]: "1500" }), 1500);
+});
+
+test("task salvages a stalled turn when Codex goes idle without terminal events", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "silent-after-progress");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "investigate the silent hang"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "1500" },
+    timeout: 15000
+  });
+
+  // A salvaged turn is reported as a non-success (incomplete -> exit 1), never a false completion.
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Note: Codex stopped emitting events before confirming completion/);
+  assert.match(result.stdout, /Looked into the failing retry path before going quiet\./);
+
+  const state = JSON.parse(fs.readFileSync(path.join(resolveStateDir(repo), "state.json"), "utf8"));
+  const job = state.jobs.find((candidate) => candidate.jobClass === "task");
+  assert.ok(job, "expected a tracked task job");
+  // The core bug: a stalled turn must not leave the job stuck "running".
+  assert.equal(job.status, "failed");
+  assert.equal(job.pid, null);
+});
+
+test("a healthy task is neither reaped nor pinned by the idle watchdog", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const start = Date.now();
+  const result = run("node", [SCRIPT, "task", "do a quick task"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "600000" },
+    timeout: 15000
+  });
+  const elapsed = Date.now() - start;
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.doesNotMatch(result.stdout, /Note: Codex stopped emitting events/);
+  // An un-unref'd / uncleared 600000ms timer would pin the short-lived CLI until the spawn timeout.
+  assert.ok(elapsed < 15000, `expected a prompt exit, took ${elapsed}ms`);
+});
+
+test("a turn streaming subagent activity under the idle window is not reaped", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "subagent-streaming-spaced");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "challenge the design with streaming feedback"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "1200" },
+    timeout: 20000
+  });
+
+  // Each subagent item (~200ms apart) resets the 1200ms window, so the turn completes normally
+  // even though its total span (~1.6s) exceeds the window. A broken reset would still fire at
+  // 1200ms (< the ~1.6s completion) and salvage early, so the reset stays load-bearing while the
+  // 6x gap-to-window margin keeps the test robust against CI scheduling jitter.
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.doesNotMatch(result.stdout, /Note: Codex stopped emitting events/);
+});
+
+test("task salvages immediately when the Codex transport dies mid-turn", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "transport-death-mid-turn");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const start = Date.now();
+  const result = run("node", [SCRIPT, "task", "investigate the crash"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      // A large idle window proves the salvage comes from the exitPromise race, not the watchdog.
+      CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "600000",
+      // Force the direct transport. A brokered app-server death is not observable as a client
+      // disconnect (the broker process stays up), so Layer A's exitPromise race is exercised on
+      // the direct transport, where killing the app-server is the client's own transport death.
+      // Pointing at a non-existent broker makes withAppServer fall back to a directly-spawned server.
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: createBrokerEndpoint(path.join(binDir, "no-such-broker-dir"))
+    },
+    timeout: 20000
+  });
+  const elapsed = Date.now() - start;
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /No verdict was salvageable - Codex went silent before producing output/);
+  assert.ok(elapsed < 15000, `expected a fast transport-death salvage, took ${elapsed}ms`);
+});
+
+test("a brokered task salvages a stalled turn when terminal events are dropped", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "silent-after-progress");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const env = { ...buildEnv(binDir), CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "1500" };
+
+  // review/start is unaffected by the silent-after-progress behavior, so it completes and
+  // establishes the shared broker (mirrors the existing brokered-subagent test).
+  const review = run("node", [SCRIPT, "review"], { cwd: repo, env, timeout: 20000 });
+  assert.equal(review.status, 0, review.stderr);
+
+  if (!loadBrokerSession(repo)) {
+    return;
+  }
+
+  const result = run("node", [SCRIPT, "task", "investigate the silent hang"], {
+    cwd: repo,
+    env,
+    timeout: 20000
+  });
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Note: Codex stopped emitting events before confirming completion/);
+
+  run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env,
+    input: JSON.stringify({ hook_event_name: "SessionEnd", cwd: repo })
+  });
+});
+
+test("the idle watchdog opt-out (0) leaves a stalled turn running in the background", async (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "silent-after-progress");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_COMPANION_TURN_IDLE_TIMEOUT_MS: "0",
+    CODEX_COMPANION_SESSION_ID: "sess-idle-disabled"
+  };
+
+  t.after(() => {
+    run("node", [SESSION_HOOK, "SessionEnd"], {
+      cwd: repo,
+      env,
+      input: JSON.stringify({
+        hook_event_name: "SessionEnd",
+        session_id: "sess-idle-disabled",
+        cwd: repo
+      })
+    });
+  });
+
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the silent hang"], {
+    cwd: repo,
+    env,
+    timeout: 15000
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.match(launchPayload.jobId, /^task-/);
+
+  // Wait for the detached worker to actually begin the (stalling) turn.
+  await waitFor(
+    () => {
+      const snap = run("node", [SCRIPT, "status", launchPayload.jobId, "--json"], { cwd: repo, env });
+      if (snap.status !== 0) {
+        return null;
+      }
+      return JSON.parse(snap.stdout).job.status === "running" ? true : null;
+    },
+    { timeoutMs: 15000, intervalMs: 300 }
+  );
+
+  // With the watchdog disabled, the stalled turn is never salvaged: the job stays running
+  // across a wait window instead of flipping to failed.
+  const waited = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "3000", "--json"],
+    { cwd: repo, env, timeout: 15000 }
+  );
+  assert.equal(waited.status, 0, waited.stderr);
+  const waitedPayload = JSON.parse(waited.stdout);
+  assert.equal(waitedPayload.job.status, "running");
+  assert.equal(waitedPayload.waitTimedOut, true);
 });
