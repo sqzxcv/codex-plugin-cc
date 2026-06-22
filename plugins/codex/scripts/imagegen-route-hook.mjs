@@ -74,8 +74,11 @@ if (tool) {
 
 // Routes we cannot safely rewrite -> block + redirect.
 const stripped = cmd.replace(/'[^']*'/g, "").replace(/"[^"]*"/g, "");
+// Use STRONG image-gen intent phrases only. Bare "imagegen" / "gpt-image" collide
+// with file and test names (e.g. `codex exec "fix the imagegen-route-hook test"`),
+// so they must NOT trip the block — only an explicit generate-an-image instruction does.
 if (/codex\s+exec/.test(stripped) &&
-    /imagegen|gpt-image|image generation|generate the image|built-in image|generated_images/i.test(cmd)) {
+    /\bimage generation\b|\bgenerate (?:the |an |a )?image\b|built[- ]in image|generated_images/i.test(cmd)) {
   block("a bare `codex exec` image generation");
 }
 if (/\/v1\/images\/(generations|edits)/i.test(cmd)) {

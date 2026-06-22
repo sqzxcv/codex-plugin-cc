@@ -1251,8 +1251,12 @@ async function captureImageTurn(client, threadId, input, options = {}) {
         const err = message?.params?.error;
         settleErr(new Error((err && typeof err.message === "string" && err.message) || "Codex image turn failed."));
       }
-    } catch {
-      // Ignore handler errors; the timeout is the backstop.
+    } catch (handlerError) {
+      // A handler failure — e.g. saveImageFromItem cannot write --out (parent is a
+      // file, permission denied, target is a directory) — must settle the promise
+      // with the real error, not hang until the 180s timeout while falsely
+      // reporting "produced no image". settleErr is a no-op once already settled.
+      settleErr(handlerError instanceof Error ? handlerError : new Error(String(handlerError)));
     }
   });
 

@@ -339,6 +339,27 @@ test("imagegen times out when Codex never produces an image", () => {
   assert.match(result.stderr, /produced no image within/);
 });
 
+test("imagegen settles with the write error instead of hanging until timeout", () => {
+  const binDir = makeTempDir();
+  const repo = setupImagegenRepo(binDir, "imagegen");
+  // Make --out unwritable: its parent is a file, so the write throws (ENOTDIR).
+  const blocker = path.join(repo, "blocker");
+  fs.writeFileSync(blocker, "x");
+  const outPath = path.join(blocker, "fox.png");
+
+  const result = run("node", [SCRIPT, "imagegen", "--out", outPath, "a fox"], {
+    cwd: repo,
+    // Short image timeout: before the fix the write error was swallowed and the
+    // command hung until this backstop fired ("produced no image within").
+    env: { ...buildEnv(binDir), CODEX_PLUGIN_IMAGE_TIMEOUT_MS: "1500" },
+    timeout: 20000
+  });
+
+  assert.notEqual(result.status, 0);
+  // It must fail via the real filesystem error, NOT fall through to the timeout backstop.
+  assert.doesNotMatch(result.stderr, /produced no image within/);
+});
+
 test("imagegen copies savedPath when the item carries no base64", () => {
   const binDir = makeTempDir();
   const repo = setupImagegenRepo(binDir, "imagegen-saved-only");

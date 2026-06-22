@@ -71,8 +71,8 @@ test("blocks (no rewrite) when the prompt is only in a file", () => {
   assert.equal(r.rewritten, null);
 });
 
-test("blocks a bare codex exec imagegen (free text, cannot map)", () => {
-  const r = run('codex exec --sandbox workspace-write "use imagegen to draw a logo, save to x.png"');
+test("blocks a bare codex exec image generation (explicit intent, cannot map)", () => {
+  const r = run('codex exec --sandbox workspace-write "use your built-in image generation to draw a logo, save to x.png"');
   assert.equal(r.status, BLOCKED);
 });
 
@@ -83,6 +83,11 @@ test("blocks a direct POST to /v1/images", () => {
 
 test("allows a coding codex exec (no image markers)", () => {
   assert.equal(run('codex exec --sandbox workspace-write "fix the failing test in foo.ts"').status, ALLOWED);
+});
+
+test("allows a coding codex exec whose prompt merely mentions imagegen", () => {
+  // Regression: a bare 'imagegen' / 'gpt-image' in a coding prompt must NOT block.
+  assert.equal(run('codex exec --sandbox workspace-write "fix the failing imagegen-route-hook test and the gpt-image fixture"').status, ALLOWED);
 });
 
 test("allows a mere quoted mention of imagegen", () => {
