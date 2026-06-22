@@ -1,6 +1,18 @@
 {
-  "description": "Optional stop-time review gate for Codex Companion.",
+  "description": "Stop-time review gate + managed image-gen routing for Codex Companion.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/imagegen-route-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
