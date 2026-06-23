@@ -253,6 +253,13 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt
     });
     writeCompletionSignalFile(jobsDir, job.id, "failed", errorMessage);
+    // The throw skips the caller's success-path COMPLETED emit; observers tailing the
+    // event stream only stop on a terminal event, so emit one here or they poll forever.
+    emitEvent({ eventFile: options.eventFile ?? job.eventFile ?? null }, EVENT_TYPES.COMPLETED, {
+      status: "failure",
+      phase: "failed",
+      summary: errorMessage
+    });
     throw error;
   }
 }
