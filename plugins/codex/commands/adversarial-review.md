@@ -1,6 +1,6 @@
 ---
 description: Run a Codex review that challenges the implementation approach and design choices
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [focus ...]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--resume|--fresh] [--within-hours <n>] [focus ...]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -43,6 +43,13 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
+
+Context reuse (lower token burn):
+- `--resume` reuses-or-creates: it reuses this git worktree's recent review thread if one exists, and otherwise starts a new resumable thread. It is safe to use on every review; you never need to seed it with `--fresh` first, and it never fails just because no prior thread exists.
+- Reusing the prior thread keeps the exploration Codex already did instead of re-reading the codebase each pass, lowering token/quota burn on iterative review loops.
+- Reuse is scoped to the current git worktree and only happens when the prior review thread was used within the last few hours (default 3, override with `--within-hours <n>`); otherwise a fresh thread is started automatically.
+- `--fresh` forces a new review thread for this worktree even when a recent one exists — use it only to deliberately discard the previous review context.
+- Pass `--resume`/`--fresh` through verbatim; do not treat them as focus text.
 
 Foreground flow:
 - Run:

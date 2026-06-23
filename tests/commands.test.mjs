@@ -37,6 +37,10 @@ test("review command uses AskUserQuestion and background Bash while staying revi
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /\(Recommended\)/);
   assert.match(source, /does not support staged-only review, unstaged-only review, or extra focus text/i);
+  assert.match(source, /\[--resume\|--fresh\]/);
+  assert.match(source, /--within-hours/);
+  assert.match(source, /reuses this git worktree's recent review thread/i);
+  assert.match(source, /reuses-or-creates/i);
 });
 
 test("adversarial review command uses AskUserQuestion and background Bash while staying review-only", () => {
@@ -49,7 +53,11 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /```bash/);
   assert.match(source, /```typescript/);
   assert.match(source, /adversarial-review "\$ARGUMENTS"/);
-  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[focus \.\.\.\]/);
+  assert.match(source, /\[--scope auto\|working-tree\|branch\]/);
+  assert.match(source, /\[focus \.\.\.\]/);
+  assert.match(source, /\[--resume\|--fresh\]/);
+  assert.match(source, /--within-hours/);
+  assert.match(source, /reuses-or-creates/i);
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex adversarial review"/);

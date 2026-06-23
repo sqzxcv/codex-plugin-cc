@@ -1,6 +1,6 @@
 ---
 description: Run a Codex code review against local git state
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--resume|--fresh] [--within-hours <n>]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -38,6 +38,14 @@ Argument handling:
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
 - `/codex:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
 - If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`.
+
+Context reuse (lower token burn):
+- `--resume` reuses-or-creates: it reuses this git worktree's recent review thread if one exists, and otherwise starts a new resumable thread. It is safe to use on every review; you never need to seed it with `--fresh` first, and it never fails just because no prior thread exists.
+- Reusing the prior thread lets Codex keep the exploration it already did instead of re-reading the codebase from scratch, which sharply cuts token/quota burn during a review → fix → re-review loop.
+- Reuse is scoped to the current git worktree and only happens when the prior review thread was used within the last few hours (default 3, override with `--within-hours <n>`); otherwise a fresh thread is started automatically.
+- `--fresh` forces a brand-new review thread for this worktree even when a recent one exists — use it only to deliberately discard the previous review context (a new task, or a stale thread).
+- `--resume`/`--fresh` run a turn-based reviewer (so the thread can be resumed) instead of Codex's one-shot native review mode, which cannot carry context between runs. Plain `/codex:review` with no flag is still the best choice for a single cold pass.
+- Pass `--resume`/`--fresh` through verbatim; the companion script handles them.
 
 Foreground flow:
 - Run:
