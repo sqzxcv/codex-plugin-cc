@@ -833,6 +833,50 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
 });
 
+test("task --background writes a .done signal file on completion for Monitor-based notification", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.status, "queued");
+  assert.ok(launchPayload.signalFile, "launch payload must include signalFile");
+  assert.ok(launchPayload.jobsDir, "launch payload must include jobsDir");
+  assert.equal(launchPayload.signalFile, path.join(launchPayload.jobsDir, `${launchPayload.jobId}.done`));
+
+  // The signal file should not exist yet (task is still running).
+  assert.equal(fs.existsSync(launchPayload.signalFile), false, "signal file must not exist before completion");
+
+  // Wait for the background worker to finish.
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.status, "completed");
+
+  // The signal file should now exist and contain the completion marker.
+  await waitFor(() => fs.existsSync(launchPayload.signalFile));
+  const signalContent = fs.readFileSync(launchPayload.signalFile, "utf8");
+  assert.match(signalContent, /completed/);
+  assert.match(signalContent, new RegExp(launchPayload.jobId));
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -2120,4 +2164,96 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+function writeCrossRootState(rootDir, slug, state) {
+  const stateDir = path.join(rootDir, slug);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  return stateDir;
+}
+
+test("result reads the stored payload from a job recovered in another state root", () => {
+  const primaryDataDir = makeTempDir();
+  const legacyRoot = makeTempDir();
+  const workspace = makeTempDir();
+  const stateDir = writeCrossRootState(legacyRoot, "remote-0011223344556677", {
+    version: 1,
+    jobs: [
+      {
+        id: "task-legacy-done",
+        status: "completed",
+        workspaceRoot: "/some/other/repo",
+        updatedAt: "2026-05-22T10:00:00.000Z"
+      }
+    ]
+  });
+  fs.writeFileSync(
+    path.join(stateDir, "jobs", "task-legacy-done.json"),
+    `${JSON.stringify({ id: "task-legacy-done", status: "completed", rendered: "LEGACY_RENDERED_MARKER" }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "result", "task-legacy-done", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: primaryDataDir,
+      CODEX_COMPANION_LEGACY_ROOTS: legacyRoot
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.storedJob?.rendered, "LEGACY_RENDERED_MARKER");
+});
+
+test("cancel updates the matched state root instead of duplicating the record", () => {
+  const primaryDataDir = makeTempDir();
+  const legacyRoot = makeTempDir();
+  const workspace = makeTempDir();
+  const slug = "remote-8899aabbccddeeff";
+  const stateDir = writeCrossRootState(legacyRoot, slug, {
+    version: 1,
+    jobs: [
+      {
+        id: "task-legacy-running",
+        status: "running",
+        workspaceRoot: "/some/other/repo",
+        updatedAt: "2026-05-22T10:00:00.000Z"
+      }
+    ]
+  });
+  fs.writeFileSync(
+    path.join(stateDir, "jobs", "task-legacy-running.json"),
+    `${JSON.stringify({ id: "task-legacy-running", status: "running" }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "cancel", "task-legacy-running", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: primaryDataDir,
+      CODEX_COMPANION_LEGACY_ROOTS: legacyRoot
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+
+  const legacyState = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(legacyState.jobs[0].status, "cancelled");
+  const legacyJobFile = JSON.parse(fs.readFileSync(path.join(stateDir, "jobs", "task-legacy-running.json"), "utf8"));
+  assert.equal(legacyJobFile.status, "cancelled");
+
+  const primaryStateRoot = path.join(primaryDataDir, "state");
+  let duplicated = false;
+  if (fs.existsSync(primaryStateRoot)) {
+    for (const entry of fs.readdirSync(primaryStateRoot)) {
+      if (fs.existsSync(path.join(primaryStateRoot, entry, "jobs", "task-legacy-running.json"))) {
+        duplicated = true;
+      }
+    }
+  }
+  assert.equal(duplicated, false, "cancel must not write a duplicate record under the current state root");
 });

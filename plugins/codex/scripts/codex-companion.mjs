@@ -7,6 +7,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { resolveCodexSandboxMode } from "./lib/codex-config.mjs";
+import { createEventStream, EVENT_TYPES, emitEvent } from "./lib/event-stream.mjs";
+import { handleObserveCommand } from "./lib/observe.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -28,9 +31,14 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  readStoredJobInDir,
+  resolveJobsDir,
+  resolveStateDir,
   setConfig,
   upsertJob,
-  writeJobFile
+  upsertJobInDir,
+  writeJobFile,
+  writeJobFileInDir
 } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
@@ -47,10 +55,11 @@ import {
   createJobRecord,
   createProgressReporter,
   nowIso,
+  resolveSignalFile,
   runTrackedJob,
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
-import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { resolveWorkspaceRoot, createWorktree } from "./lib/workspace.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -80,7 +89,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  node scripts/codex-companion.mjs observe [job-id] [--cwd <path>]"
     ].join("\n")
   );
 }
@@ -457,6 +467,7 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const codexCwd = request.worktreePath ?? workspaceRoot;
   ensureCodexAvailable(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
@@ -479,13 +490,13 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurn(codexCwd, {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: resolveCodexSandboxMode(workspaceRoot) ?? (request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -502,7 +513,10 @@ async function executeTaskRun(request) {
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+      write: Boolean(request.write),
+      worktreePath: request.worktreePath ?? null,
+      worktreeBranch: request.worktreeBranch ?? null,
+      worktreeBaseBranch: request.worktreeBaseBranch ?? null
     }
   );
   const payload = {
@@ -510,7 +524,10 @@ async function executeTaskRun(request) {
     threadId: result.threadId,
     rawOutput,
     touchedFiles: result.touchedFiles,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    worktreePath: request.worktreePath ?? null,
+    worktreeBranch: request.worktreeBranch ?? null,
+    worktreeBaseBranch: request.worktreeBaseBranch ?? null
   };
 
   return {
@@ -551,7 +568,17 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+  const lines = [`${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.`];
+  if (payload.worktreePath) {
+    lines.push(`  Worktree: ${payload.worktreePath}`);
+    if (payload.worktreeBranch) {
+      lines.push(`  Branch:   ${payload.worktreeBranch}`);
+    }
+  }
+  if (payload.signalFile) {
+    lines.push(`  Signal:   ${payload.signalFile}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -561,9 +588,9 @@ function getJobKindLabel(kind, jobClass) {
   return jobClass === "review" ? "review" : "rescue";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false, id }) {
   return createJobRecord({
-    id: generateJobId(prefix),
+    id: id ?? generateJobId(prefix),
     kind,
     kindLabel: getJobKindLabel(kind, jobClass),
     title,
@@ -576,29 +603,46 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 function createTrackedProgress(job, options = {}) {
   const logFile = options.logFile ?? createJobLogFile(job.workspaceRoot, job.id, job.title);
+  const jobsDir = resolveJobsDir(job.workspaceRoot);
+  const eventStream = createEventStream(job.id, jobsDir);
   return {
     logFile,
+    eventFile: eventStream.eventFile,
+    eventStream,
     progress: createProgressReporter({
       stderr: Boolean(options.stderr),
       logFile,
+      eventStream,
       onEvent: createJobProgressUpdater(job.workspaceRoot, job.id)
     })
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
-  return createCompanionJob({
+function buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo = null, id = null) {
+  const base = createCompanionJob({
     prefix: "task",
     kind: "task",
     title: taskMetadata.title,
     workspaceRoot,
     jobClass: "task",
     summary: taskMetadata.summary,
-    write
+    write,
+    id
   });
+
+  if (!worktreeInfo) {
+    return base;
+  }
+
+  return {
+    ...base,
+    worktreePath: worktreeInfo.worktreePath,
+    worktreeBranch: worktreeInfo.worktreeBranch,
+    worktreeBaseBranch: worktreeInfo.worktreeBaseBranch
+  };
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, worktreePath = null, worktreeBranch = null, worktreeBaseBranch = null }) {
   return {
     cwd,
     model,
@@ -606,7 +650,10 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
-    jobId
+    jobId,
+    worktreePath,
+    worktreeBranch,
+    worktreeBaseBranch
   };
 }
 
@@ -626,11 +673,18 @@ function requireTaskRequest(prompt, resumeLast) {
 }
 
 async function runForegroundCommand(job, runner, options = {}) {
-  const { logFile, progress } = createTrackedProgress(job, {
+  const { logFile, eventFile, eventStream, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
     stderr: !options.json
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
+  const execution = await runTrackedJob(job, () => runner(progress), { logFile, eventFile });
+  if (eventStream) {
+    emitEvent(eventStream, EVENT_TYPES.COMPLETED, {
+      status: execution.exitStatus === 0 ? "success" : "failure",
+      phase: execution.exitStatus === 0 ? "done" : "failed",
+      summary: execution.summary ?? null
+    });
+  }
   outputResult(options.json ? execution.payload : execution.rendered, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
@@ -652,16 +706,20 @@ function spawnDetachedTaskWorker(cwd, jobId) {
 }
 
 function enqueueBackgroundTask(cwd, job, request) {
-  const { logFile } = createTrackedProgress(job);
+  const { logFile, eventFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
   const child = spawnDetachedTaskWorker(cwd, job.id);
+  const jobsDir = resolveJobsDir(job.workspaceRoot);
+  const signalFile = resolveSignalFile(jobsDir, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: child.pid ?? null,
     logFile,
+    eventFile,
+    signalFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
@@ -673,7 +731,12 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       title: job.title,
       summary: job.summary,
-      logFile
+      logFile,
+      eventFile,
+      jobsDir,
+      signalFile,
+      worktreePath: job.worktreePath ?? null,
+      worktreeBranch: job.worktreeBranch ?? null
     },
     logFile
   };
@@ -732,7 +795,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "worktree"],
     aliasMap: {
       m: "model"
     }
@@ -746,8 +809,12 @@ async function handleTask(argv) {
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
+  const worktree = Boolean(options.worktree);
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
+  }
+  if (worktree && resumeLast) {
+    throw new Error("Choose either --worktree or --resume/--resume-last.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
@@ -755,11 +822,19 @@ async function handleTask(argv) {
     resumeLast
   });
 
+  // Create worktree if requested (before job creation so we have the path)
+  let worktreeInfo = null;
+  let preassignedJobId = null;
+  if (worktree) {
+    preassignedJobId = generateJobId("task");
+    worktreeInfo = createWorktree(workspaceRoot, preassignedJobId, prompt);
+  }
+
   if (options.background) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo, preassignedJobId);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -767,14 +842,17 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
-      jobId: job.id
+      jobId: job.id,
+      worktreePath: worktreeInfo?.worktreePath ?? null,
+      worktreeBranch: worktreeInfo?.worktreeBranch ?? null,
+      worktreeBaseBranch: worktreeInfo?.worktreeBaseBranch ?? null
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo, preassignedJobId);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -786,6 +864,9 @@ async function handleTask(argv) {
         write,
         resumeLast,
         jobId: job.id,
+        worktreePath: worktreeInfo?.worktreePath ?? null,
+        worktreeBranch: worktreeInfo?.worktreeBranch ?? null,
+        worktreeBaseBranch: worktreeInfo?.worktreeBaseBranch ?? null,
         onProgress: progress
       }),
     { json: options.json }
@@ -813,7 +894,7 @@ async function handleTaskWorker(argv) {
     throw new Error(`Stored job ${options["job-id"]} is missing its task request payload.`);
   }
 
-  const { logFile, progress } = createTrackedProgress(
+  const { logFile, eventFile, eventStream, progress } = createTrackedProgress(
     {
       ...storedJob,
       workspaceRoot
@@ -822,19 +903,27 @@ async function handleTaskWorker(argv) {
       logFile: storedJob.logFile ?? null
     }
   );
-  await runTrackedJob(
+  const execution = await runTrackedJob(
     {
       ...storedJob,
       workspaceRoot,
-      logFile
+      logFile,
+      eventFile
     },
     () =>
       executeTaskRun({
         ...request,
         onProgress: progress
       }),
-    { logFile }
+    { logFile, eventFile }
   );
+  if (eventStream) {
+    emitEvent(eventStream, EVENT_TYPES.COMPLETED, {
+      status: execution.exitStatus === 0 ? "success" : "failure",
+      phase: execution.exitStatus === 0 ? "done" : "failed",
+      summary: execution.summary ?? null
+    });
+  }
 }
 
 async function handleStatus(argv) {
@@ -872,8 +961,9 @@ function handleResult(argv) {
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
-  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const { workspaceRoot, job, crossWorkspace, crossWorkspaceStateDir } = resolveResultJob(cwd, reference);
+  const stateDir = crossWorkspace ? crossWorkspaceStateDir : resolveStateDir(workspaceRoot);
+  const storedJob = readStoredJobInDir(stateDir, job.id);
   const payload = {
     job,
     storedJob
@@ -925,12 +1015,15 @@ async function handleCancel(argv) {
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  const { workspaceRoot, job, crossWorkspace, crossWorkspaceStateDir } = resolveCancelableJob(cwd, reference, {
+    env: process.env
+  });
+  const stateDir = crossWorkspace ? crossWorkspaceStateDir : resolveStateDir(workspaceRoot);
+  const existing = readStoredJobInDir(stateDir, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
 
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  const interrupt = await interruptAppServerTurn(workspaceRoot, { threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -953,12 +1046,12 @@ async function handleCancel(argv) {
     errorMessage: "Cancelled by user."
   };
 
-  writeJobFile(workspaceRoot, job.id, {
+  writeJobFileInDir(stateDir, job.id, {
     ...existing,
     ...nextJob,
     cancelledAt: completedAt
   });
-  upsertJob(workspaceRoot, {
+  upsertJobInDir(stateDir, {
     id: job.id,
     status: "cancelled",
     phase: "cancelled",
@@ -1014,6 +1107,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "observe":
+      await handleObserveCommand(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);
