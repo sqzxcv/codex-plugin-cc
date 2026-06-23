@@ -2165,3 +2165,95 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
 });
+
+function writeCrossRootState(rootDir, slug, state) {
+  const stateDir = path.join(rootDir, slug);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  return stateDir;
+}
+
+test("result reads the stored payload from a job recovered in another state root", () => {
+  const primaryDataDir = makeTempDir();
+  const legacyRoot = makeTempDir();
+  const workspace = makeTempDir();
+  const stateDir = writeCrossRootState(legacyRoot, "remote-0011223344556677", {
+    version: 1,
+    jobs: [
+      {
+        id: "task-legacy-done",
+        status: "completed",
+        workspaceRoot: "/some/other/repo",
+        updatedAt: "2026-05-22T10:00:00.000Z"
+      }
+    ]
+  });
+  fs.writeFileSync(
+    path.join(stateDir, "jobs", "task-legacy-done.json"),
+    `${JSON.stringify({ id: "task-legacy-done", status: "completed", rendered: "LEGACY_RENDERED_MARKER" }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "result", "task-legacy-done", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: primaryDataDir,
+      CODEX_COMPANION_LEGACY_ROOTS: legacyRoot
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.storedJob?.rendered, "LEGACY_RENDERED_MARKER");
+});
+
+test("cancel updates the matched state root instead of duplicating the record", () => {
+  const primaryDataDir = makeTempDir();
+  const legacyRoot = makeTempDir();
+  const workspace = makeTempDir();
+  const slug = "remote-8899aabbccddeeff";
+  const stateDir = writeCrossRootState(legacyRoot, slug, {
+    version: 1,
+    jobs: [
+      {
+        id: "task-legacy-running",
+        status: "running",
+        workspaceRoot: "/some/other/repo",
+        updatedAt: "2026-05-22T10:00:00.000Z"
+      }
+    ]
+  });
+  fs.writeFileSync(
+    path.join(stateDir, "jobs", "task-legacy-running.json"),
+    `${JSON.stringify({ id: "task-legacy-running", status: "running" }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "cancel", "task-legacy-running", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: primaryDataDir,
+      CODEX_COMPANION_LEGACY_ROOTS: legacyRoot
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+
+  const legacyState = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(legacyState.jobs[0].status, "cancelled");
+  const legacyJobFile = JSON.parse(fs.readFileSync(path.join(stateDir, "jobs", "task-legacy-running.json"), "utf8"));
+  assert.equal(legacyJobFile.status, "cancelled");
+
+  const primaryStateRoot = path.join(primaryDataDir, "state");
+  let duplicated = false;
+  if (fs.existsSync(primaryStateRoot)) {
+    for (const entry of fs.readdirSync(primaryStateRoot)) {
+      if (fs.existsSync(path.join(primaryStateRoot, entry, "jobs", "task-legacy-running.json"))) {
+        duplicated = true;
+      }
+    }
+  }
+  assert.equal(duplicated, false, "cancel must not write a duplicate record under the current state root");
+});

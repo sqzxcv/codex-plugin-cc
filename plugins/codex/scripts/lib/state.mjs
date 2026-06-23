@@ -179,20 +179,36 @@ export function findJobByIdAcrossWorkspaces(jobId) {
   return null;
 }
 
+function stateFileInDir(stateDir) {
+  return path.join(stateDir, STATE_FILE_NAME);
+}
+
+function jobsDirInDir(stateDir) {
+  return path.join(stateDir, JOBS_DIR_NAME);
+}
+
+function jobFileInDir(stateDir, jobId) {
+  return path.join(jobsDirInDir(stateDir), `${jobId}.json`);
+}
+
+function ensureDir(stateDir) {
+  fs.mkdirSync(jobsDirInDir(stateDir), { recursive: true });
+}
+
 export function resolveStateFile(cwd) {
-  return path.join(resolveStateDir(cwd), STATE_FILE_NAME);
+  return stateFileInDir(resolveStateDir(cwd));
 }
 
 export function resolveJobsDir(cwd) {
-  return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
+  return jobsDirInDir(resolveStateDir(cwd));
 }
 
 export function ensureStateDir(cwd) {
-  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+  ensureDir(resolveStateDir(cwd));
 }
 
-export function loadState(cwd) {
-  const stateFile = resolveStateFile(cwd);
+function loadStateFromDir(stateDir) {
+  const stateFile = stateFileInDir(stateDir);
   if (!fs.existsSync(stateFile)) {
     return defaultState();
   }
@@ -213,6 +229,10 @@ export function loadState(cwd) {
   }
 }
 
+export function loadState(cwd) {
+  return loadStateFromDir(resolveStateDir(cwd));
+}
+
 function pruneJobs(jobs) {
   return [...jobs]
     .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
@@ -225,9 +245,9 @@ function removeFileIfExists(filePath) {
   }
 }
 
-export function saveState(cwd, state) {
-  const previousJobs = loadState(cwd).jobs;
-  ensureStateDir(cwd);
+function saveStateToDir(stateDir, state) {
+  const previousJobs = loadStateFromDir(stateDir).jobs;
+  ensureDir(stateDir);
   const nextJobs = pruneJobs(state.jobs ?? []);
   const nextState = {
     version: STATE_VERSION,
@@ -243,19 +263,27 @@ export function saveState(cwd, state) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd, job.id));
+    removeJobFile(jobFileInDir(stateDir, job.id));
     removeFileIfExists(job.logFile);
     removeFileIfExists(job.eventFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  fs.writeFileSync(stateFileInDir(stateDir), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
   return nextState;
 }
 
-export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
+export function saveState(cwd, state) {
+  return saveStateToDir(resolveStateDir(cwd), state);
+}
+
+function updateStateInDir(stateDir, mutate) {
+  const state = loadStateFromDir(stateDir);
   mutate(state);
-  return saveState(cwd, state);
+  return saveStateToDir(stateDir, state);
+}
+
+export function updateState(cwd, mutate) {
+  return updateStateInDir(resolveStateDir(cwd), mutate);
 }
 
 export function generateJobId(prefix = "job") {
@@ -263,24 +291,30 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
+function applyJobPatch(state, jobPatch) {
+  const timestamp = nowIso();
+  const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+  if (existingIndex === -1) {
+    state.jobs.unshift({
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...jobPatch
+    });
+    return;
+  }
+  state.jobs[existingIndex] = {
+    ...state.jobs[existingIndex],
+    ...jobPatch,
+    updatedAt: timestamp
+  };
+}
+
 export function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp
-    };
-  });
+  return updateState(cwd, (state) => applyJobPatch(state, jobPatch));
+}
+
+export function upsertJobInDir(stateDir, jobPatch) {
+  return updateStateInDir(stateDir, (state) => applyJobPatch(state, jobPatch));
 }
 
 export function listJobs(cwd) {
@@ -300,15 +334,27 @@ export function getConfig(cwd) {
   return loadState(cwd).config;
 }
 
-export function writeJobFile(cwd, jobId, payload) {
-  ensureStateDir(cwd);
-  const jobFile = resolveJobFile(cwd, jobId);
+export function writeJobFileInDir(stateDir, jobId, payload) {
+  ensureDir(stateDir);
+  const jobFile = jobFileInDir(stateDir, jobId);
   fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return jobFile;
 }
 
+export function writeJobFile(cwd, jobId, payload) {
+  return writeJobFileInDir(resolveStateDir(cwd), jobId, payload);
+}
+
 export function readJobFile(jobFile) {
   return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+}
+
+export function readStoredJobInDir(stateDir, jobId) {
+  const jobFile = jobFileInDir(stateDir, jobId);
+  if (!fs.existsSync(jobFile)) {
+    return null;
+  }
+  return readJobFile(jobFile);
 }
 
 function removeJobFile(jobFile) {

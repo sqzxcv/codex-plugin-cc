@@ -31,10 +31,14 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  readStoredJobInDir,
   resolveJobsDir,
+  resolveStateDir,
   setConfig,
   upsertJob,
-  writeJobFile
+  upsertJobInDir,
+  writeJobFile,
+  writeJobFileInDir
 } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
@@ -957,8 +961,9 @@ function handleResult(argv) {
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveResultJob(cwd, reference);
-  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const { workspaceRoot, job, crossWorkspace, crossWorkspaceStateDir } = resolveResultJob(cwd, reference);
+  const stateDir = crossWorkspace ? crossWorkspaceStateDir : resolveStateDir(workspaceRoot);
+  const storedJob = readStoredJobInDir(stateDir, job.id);
   const payload = {
     job,
     storedJob
@@ -1010,8 +1015,11 @@ async function handleCancel(argv) {
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  const { workspaceRoot, job, crossWorkspace, crossWorkspaceStateDir } = resolveCancelableJob(cwd, reference, {
+    env: process.env
+  });
+  const stateDir = crossWorkspace ? crossWorkspaceStateDir : resolveStateDir(workspaceRoot);
+  const existing = readStoredJobInDir(stateDir, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
 
@@ -1038,12 +1046,12 @@ async function handleCancel(argv) {
     errorMessage: "Cancelled by user."
   };
 
-  writeJobFile(workspaceRoot, job.id, {
+  writeJobFileInDir(stateDir, job.id, {
     ...existing,
     ...nextJob,
     cancelledAt: completedAt
   });
-  upsertJob(workspaceRoot, {
+  upsertJobInDir(stateDir, {
     id: job.id,
     status: "cancelled",
     phase: "cancelled",
