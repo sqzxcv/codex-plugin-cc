@@ -69,6 +69,8 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const SANDBOX_MODE_ENV = "CODEX_COMPANION_SANDBOX_MODE";
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
@@ -154,6 +156,20 @@ function resolveCommandCwd(options = {}) {
 
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
+}
+
+function resolveSandboxMode(defaultMode) {
+  const configured = process.env[SANDBOX_MODE_ENV]?.trim();
+  if (!configured) {
+    return defaultMode;
+  }
+  if (configured === "inherit") {
+    return null;
+  }
+  if (VALID_SANDBOX_MODES.has(configured)) {
+    return configured;
+  }
+  throw new Error(`Invalid ${SANDBOX_MODE_ENV}: ${configured}`);
 }
 
 function sleep(ms) {
@@ -370,6 +386,7 @@ async function executeReviewRun(request) {
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      sandbox: resolveSandboxMode("read-only"),
       onProgress: request.onProgress
     });
     const payload = {
@@ -411,7 +428,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
-    sandbox: "read-only",
+    sandbox: resolveSandboxMode("read-only"),
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
@@ -488,7 +505,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: resolveSandboxMode(request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
