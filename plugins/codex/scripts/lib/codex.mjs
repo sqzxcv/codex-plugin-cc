@@ -51,6 +51,17 @@ const DEFAULT_CONTINUE_PROMPT =
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 
+// Permanent auth-fail patterns from the OpenAI API. The underlying Codex CLI's
+// app-server retries indefinitely on these, but they never recover without
+// re-authenticating, so we abort the captureTurn early.
+const PERMANENT_AUTH_ERROR_RE = /\b(?:401\s+Unauthorized|403\s+Forbidden|Missing\s+bearer|invalid\s+api\s+key|authentication[_-]?failed)\b/i;
+
+function isPermanentAuthError(error) {
+  if (!error) return false;
+  const message = typeof error === "string" ? error : (error.message ?? "");
+  return PERMANENT_AUTH_ERROR_RE.test(message);
+}
+
 function cleanCodexStderr(stderr) {
   return stderr
     .split(/\r?\n/)
@@ -537,6 +548,12 @@ function applyTurnNotification(state, message) {
     case "error":
       state.error = message.params.error;
       emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
+      // Short-circuit on permanent auth failures so we don't waste API quota
+      // in the underlying CLI's reconnect loop (it retries 5x by default).
+      // 401/403 from OpenAI never recovers without re-authenticating.
+      if (isPermanentAuthError(message.params.error)) {
+        completeTurn(state, { id: state.turnId ?? "auth-failure", status: "failed" });
+      }
       break;
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
