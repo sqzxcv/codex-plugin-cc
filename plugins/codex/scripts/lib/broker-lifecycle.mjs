@@ -6,11 +6,50 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { resolveStateDir } from "./state.mjs";
+import { resolveStateDir, resolveStateRoot } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
+const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+
+export function resolveSessionId(options = {}) {
+  if (options.sessionId) {
+    return options.sessionId;
+  }
+  const env = options.env ?? process.env;
+  return env[SESSION_ID_ENV] ?? null;
+}
+
+function brokerSessionOwners(session) {
+  const owners = [];
+  if (Array.isArray(session?.sessionIds)) {
+    owners.push(...session.sessionIds);
+  }
+  if (session?.sessionId) {
+    owners.push(session.sessionId);
+  }
+  return [...new Set(owners.filter(Boolean))];
+}
+
+export function hasBrokerSessionOwners(session) {
+  return brokerSessionOwners(session).length > 0;
+}
+
+function withBrokerSessionOwner(session, sessionId) {
+  if (!sessionId) {
+    return session;
+  }
+  const owners = brokerSessionOwners(session);
+  if (!owners.includes(sessionId)) {
+    owners.push(sessionId);
+  }
+  return {
+    ...session,
+    sessionId: owners[0] ?? sessionId,
+    sessionIds: owners
+  };
+}
 
 export function createBrokerSessionDir(prefix = "cxc-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -113,7 +152,11 @@ async function isBrokerEndpointReady(endpoint) {
 export async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
-    return existing;
+    const withOwner = withBrokerSessionOwner(existing, resolveSessionId(options));
+    if (withOwner !== existing) {
+      saveBrokerSession(cwd, withOwner);
+    }
+    return withOwner;
   }
 
   if (existing) {
@@ -164,10 +207,67 @@ export async function ensureBrokerSession(cwd, options = {}) {
     pidFile,
     logFile,
     sessionDir,
-    pid: child.pid ?? null
+    pid: child.pid ?? null,
+    sessionId: resolveSessionId(options)
   };
-  saveBrokerSession(cwd, session);
-  return session;
+  const withOwner = withBrokerSessionOwner(session, session.sessionId);
+  saveBrokerSession(cwd, withOwner);
+  return withOwner;
+}
+
+export async function teardownBrokersForSession(sessionId, { killProcess = null } = {}) {
+  if (!sessionId) {
+    return 0;
+  }
+  const stateRoot = resolveStateRoot();
+  if (!fs.existsSync(stateRoot)) {
+    return 0;
+  }
+
+  let count = 0;
+  for (const entry of fs.readdirSync(stateRoot)) {
+    const stateFile = path.join(stateRoot, entry, BROKER_STATE_FILE);
+    if (!fs.existsSync(stateFile)) {
+      continue;
+    }
+
+    let session;
+    try {
+      session = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {
+      continue;
+    }
+    const owners = brokerSessionOwners(session);
+    if (!owners.includes(sessionId)) {
+      continue;
+    }
+    const remainingOwners = owners.filter((owner) => owner !== sessionId);
+    if (remainingOwners.length > 0) {
+      fs.writeFileSync(
+        stateFile,
+        `${JSON.stringify({ ...session, sessionId: remainingOwners[0], sessionIds: remainingOwners }, null, 2)}\n`,
+        "utf8"
+      );
+      continue;
+    }
+
+    if (session.endpoint) {
+      await sendBrokerShutdown(session.endpoint);
+    }
+    teardownBrokerSession({
+      endpoint: session.endpoint ?? null,
+      pidFile: session.pidFile ?? null,
+      logFile: session.logFile ?? null,
+      sessionDir: session.sessionDir ?? null,
+      pid: session.pid ?? null,
+      killProcess
+    });
+    if (fs.existsSync(stateFile)) {
+      fs.unlinkSync(stateFile);
+    }
+    count += 1;
+  }
+  return count;
 }
 
 export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
