@@ -452,11 +452,150 @@ rl.on("line", (line) => {
 	          prompt
 	        };
 	        saveState(state);
-	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+	        if (BEHAVIOR === "subagent-buffered-start") {
+          const subThread = nextThread(state, thread.cwd, true);
+          const subThreadRecord = ensureThread(state, subThread.id);
+          subThreadRecord.name = "design-challenger";
+          saveState(state);
+          // Emit the subagent thread/started BEFORE the turn/start response: the client buffers it
+          // (state.turnId is only set once the response's await continuation runs), so it is handled
+          // through the buffered-replay path rather than the live handler.
+          send({ method: "thread/started", params: { thread: { ...buildThread(subThreadRecord), name: "design-challenger", agentNickname: "design-challenger" } } });
+          send({ id: message.id, result: { turn: buildTurn(turnId) } });
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: subThread.id,
+              turnId,
+              item: { type: "agentMessage", id: "msg_sub_" + turnId, text: "Subagent analysis note.", phase: "analysis" }
+            }
+          });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: thread.id,
+              turnId,
+              item: { type: "agentMessage", id: "msg_" + turnId, text: taskPayload(prompt, false), phase: "final_answer" }
+            }
+          });
+          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+          break;
+        }
+
+        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
           : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
+
+        if (BEHAVIOR === "silent-after-progress") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: thread.id,
+              turnId,
+              item: { type: "agentMessage", id: "msg_" + turnId, text: "Looked into the failing retry path before going quiet.", phase: "analysis" }
+            }
+          });
+          // Intentionally drop BOTH the final_answer agentMessage and the turn/completed event.
+          // The connection stays open and silent, reproducing the stalled-turn hang.
+          break;
+        }
+
+        if (BEHAVIOR === "transport-death-mid-turn") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          // Let the turn/start response + turn/started flush and register the live turn, THEN drop the
+          // transport before any agentMessage. This is connection death on an already-live turn (the
+          // exitPromise-race scenario), not a pre-response rejection.
+          setTimeout(() => process.exit(0), 150);
+          break;
+        }
+
+        if (BEHAVIOR === "subagent-streaming-spaced") {
+          const subThread = nextThread(state, thread.cwd, true);
+          const subThreadRecord = ensureThread(state, subThread.id);
+          subThreadRecord.name = "design-challenger";
+          saveState(state);
+          const subTurnId = nextTurnId(state);
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({ method: "thread/started", params: { thread: { ...buildThread(subThreadRecord), name: "design-challenger", agentNickname: "design-challenger" } } });
+          send({
+            method: "item/started",
+            params: {
+              threadId: thread.id,
+              turnId,
+              item: {
+                type: "collabAgentToolCall",
+                id: "collab_" + turnId,
+                tool: "wait",
+                status: "inProgress",
+                senderThreadId: thread.id,
+                receiverThreadIds: [subThread.id],
+                prompt: "Stream design feedback",
+                model: null,
+                reasoningEffort: null,
+                agentsStates: { [subThread.id]: { status: "inProgress", message: "Working" } }
+              }
+            }
+          });
+          send({ method: "turn/started", params: { threadId: subThread.id, turn: buildTurn(subTurnId) } });
+          let streamed = 0;
+          const STREAM_STEPS = 7;
+          const STREAM_GAP_MS = 200;
+          const streamNext = () => {
+            if (streamed < STREAM_STEPS) {
+              send({
+                method: "item/completed",
+                params: {
+                  threadId: subThread.id,
+                  turnId: subTurnId,
+                  item: {
+                    type: "reasoning",
+                    id: "reasoning_" + subTurnId + "_" + streamed,
+                    summary: [{ text: "Subagent streaming step " + streamed }],
+                    content: []
+                  }
+                }
+              });
+              streamed++;
+              setTimeout(streamNext, STREAM_GAP_MS);
+              return;
+            }
+            send({ method: "turn/completed", params: { threadId: subThread.id, turn: buildTurn(subTurnId, "completed") } });
+            send({
+              method: "item/completed",
+              params: {
+                threadId: thread.id,
+                turnId,
+                item: {
+                  type: "collabAgentToolCall",
+                  id: "collab_" + turnId,
+                  tool: "wait",
+                  status: "completed",
+                  senderThreadId: thread.id,
+                  receiverThreadIds: [subThread.id],
+                  prompt: "Stream design feedback",
+                  model: null,
+                  reasoningEffort: null,
+                  agentsStates: { [subThread.id]: { status: "completed", message: "Finished" } }
+                }
+              }
+            });
+            send({
+              method: "item/completed",
+              params: {
+                threadId: thread.id,
+                turnId,
+                item: { type: "agentMessage", id: "msg_" + turnId, text: payload, phase: "final_answer" }
+              }
+            });
+            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+          };
+          setTimeout(streamNext, STREAM_GAP_MS);
+          break;
+        }
 
         if (
           BEHAVIOR === "with-subagent" ||
