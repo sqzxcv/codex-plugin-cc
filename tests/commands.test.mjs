@@ -78,6 +78,10 @@ test("continue is not exposed as a user-facing command", () => {
     "rescue.md",
     "result.md",
     "review.md",
+    "session-review-claude.md",
+    "session-review-loop.md",
+    "session-review-user.md",
+    "session-review.md",
     "setup.md",
     "status.md",
     "transfer.md"

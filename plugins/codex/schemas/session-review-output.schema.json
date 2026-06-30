@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "phase",
+    "summary",
+    "findings",
+    "next_steps"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "needs-attention"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "initial",
+        "follow-up"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "severity",
+          "title",
+          "body",
+          "evidence",
+          "recommendation",
+          "suggested_owner"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "plan",
+              "code",
+              "test",
+              "process"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recommendation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suggested_owner": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "user"
+            ]
+          }
+        }
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

@@ -11,6 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:session-review` for a Codex review of the current Claude Code session, including Claude's plan, responses, tool activity, and current git diff
 - `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
 
 ## Requirements
@@ -122,6 +123,23 @@ Examples:
 ```
 
 This command is read-only. It does not fix code.
+
+### `/codex:session-review`
+
+Runs a Codex review of the current Claude Code session. It uses the session transcript plus the current git state, so Codex can review Claude's user-understanding, plan, responses, actual edit activity, and code diff together.
+
+The main command is interactive: it shows Codex's review first, then asks whether the result should go to the user, to Claude for one handling pass, or into a review/fix loop. The shortcut commands preselect those flows:
+
+```bash
+/codex:session-review
+/codex:session-review-user
+/codex:session-review-claude
+/codex:session-review-loop
+```
+
+Codex itself stays read-only. If Claude handles findings, the Codex review is shown to the user first, and Claude must classify each finding as `修复` or `有异议` before making changes or disputing the finding. Follow-up reviews focus on transcript entries and git changes added after the previous session review.
+
+If the plugin cannot identify the current Claude transcript automatically, pass `--source <path-to-claude-jsonl>`.
 
 ### `/codex:rescue`
 

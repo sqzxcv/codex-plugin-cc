@@ -63,6 +63,7 @@ import {
   renderStatusReport,
   renderTaskResult
 } from "./lib/render.mjs";
+import { executeSessionReviewRun } from "./lib/session-review-runner.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
@@ -79,6 +80,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs session-review [--json] [--follow-up] [--source <claude-jsonl>]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
@@ -457,7 +459,6 @@ async function executeReviewRun(request) {
   };
 }
 
-
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureCodexAvailable(request.cwd);
@@ -564,11 +565,11 @@ function getJobKindLabel(kind, jobClass) {
   return jobClass === "review" ? "review" : "rescue";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, kindLabel = null, title, workspaceRoot, jobClass, summary, write = false }) {
   return createJobRecord({
     id: generateJobId(prefix),
     kind,
-    kindLabel: getJobKindLabel(kind, jobClass),
+    kindLabel: kindLabel ?? getJobKindLabel(kind, jobClass),
     title,
     workspaceRoot,
     jobClass,
@@ -757,6 +758,42 @@ async function handleReview(argv) {
     reviewName: "Review",
     validateRequest: validateNativeReviewRequest
   });
+}
+
+async function handleSessionReview(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "model", "source"],
+    booleanOptions: ["json", "follow-up"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const job = createCompanionJob({
+    prefix: "session-review",
+    kind: "session-review",
+    kindLabel: "session-review",
+    title: "Codex Session Review",
+    workspaceRoot,
+    jobClass: "review",
+    summary: options["follow-up"] ? "Follow-up review of the Claude session" : "Review current Claude session"
+  });
+
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeSessionReviewRun({
+        cwd,
+        source: options.source,
+        model: options.model,
+        followUp: Boolean(options["follow-up"]),
+        jobId: job.id,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
 }
 
 async function handleTask(argv) {
@@ -1039,6 +1076,9 @@ async function main() {
       await handleReviewCommand(argv, {
         reviewName: "Adversarial Review"
       });
+      break;
+    case "session-review":
+      await handleSessionReview(argv);
       break;
     case "task":
       await handleTask(argv);
