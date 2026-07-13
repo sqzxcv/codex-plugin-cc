@@ -12,6 +12,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
+const SESSION_REVIEW_LIB = path.join(PLUGIN_ROOT, "scripts", "lib", "session-review.mjs");
+
+test("session-review passes repository-derived git arguments without a shell", () => {
+  const source = fs.readFileSync(SESSION_REVIEW_LIB, "utf8");
+
+  assert.match(source, /runCommandChecked\("git", args, \{ cwd, shell: false \}\)/);
+});
 
 function installSessionReviewFakeCodex(binDir, behavior = "session-review") {
   installFakeCodex(binDir);

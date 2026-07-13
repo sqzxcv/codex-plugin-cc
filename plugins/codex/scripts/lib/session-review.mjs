@@ -241,7 +241,7 @@ function summarizeEntries(entries, repoRoot) {
 }
 
 function gitChecked(cwd, args) {
-  return runCommandChecked("git", args, { cwd }).stdout;
+  return runCommandChecked("git", args, { cwd, shell: false }).stdout;
 }
 
 function formatUntrackedFile(repoRoot, relativePath) {
