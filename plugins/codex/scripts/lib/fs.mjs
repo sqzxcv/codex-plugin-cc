@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export function ensureAbsolutePath(cwd, maybePath) {
   return path.isAbsolute(maybePath) ? maybePath : path.resolve(cwd, maybePath);
@@ -16,6 +17,23 @@ export function readJsonFile(filePath) {
 
 export function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+export function writeJsonFileAtomic(filePath, value) {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
+  );
+
+  try {
+    writeJsonFile(temporaryPath, value);
+    fs.renameSync(temporaryPath, filePath);
+  } catch (error) {
+    if (fs.existsSync(temporaryPath)) {
+      fs.unlinkSync(temporaryPath);
+    }
+    throw error;
+  }
 }
 
 export function safeReadFile(filePath) {

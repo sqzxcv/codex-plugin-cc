@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -72,6 +73,7 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const MAX_USER_NOTE_FILE_BYTES = 32 * 1024;
 
 function printUsage() {
   console.log(
@@ -80,7 +82,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs session-review [--json] [--follow-up] [--source <claude-jsonl>]",
+      "  node scripts/codex-companion.mjs session-review [--json] [--source <claude-jsonl>] [--user-note <text>] [--user-note-file <path>] [review note]",
+      "  node scripts/codex-companion.mjs session-review-follow-up [--json] [--source <claude-jsonl>] [--user-note <text>] [--user-note-file <path>] [review note]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
@@ -156,6 +159,63 @@ function resolveCommandCwd(options = {}) {
 
 function resolveCommandWorkspace(options = {}) {
   return resolveWorkspaceRoot(resolveCommandCwd(options));
+}
+
+function pushNonEmptyNotePart(parts, value) {
+  const text = value == null ? "" : String(value);
+  if (text.trim()) {
+    parts.push(text);
+  }
+}
+
+function resolveExistingPath(filePath) {
+  return fs.realpathSync.native(filePath);
+}
+
+function pathIsInside(childPath, parentPath) {
+  const relative = path.relative(parentPath, childPath);
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function allowedUserNoteFileRoots(cwd) {
+  return [cwd, os.tmpdir(), process.env.CLAUDE_PLUGIN_DATA]
+    .filter(Boolean)
+    .map((root) => {
+      try {
+        return resolveExistingPath(path.resolve(cwd, root));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function readUserNoteFile(cwd, filePath) {
+  if (!filePath) {
+    return "";
+  }
+  const resolvedFile = resolveExistingPath(path.resolve(cwd, filePath));
+  const allowed = allowedUserNoteFileRoots(cwd).some((root) => pathIsInside(resolvedFile, root));
+  if (!allowed) {
+    throw new Error("User note file must be inside the workspace, system temp directory, or CLAUDE_PLUGIN_DATA.");
+  }
+
+  const stat = fs.statSync(resolvedFile);
+  if (!stat.isFile()) {
+    throw new Error(`User note file is not a regular file: ${filePath}`);
+  }
+  if (stat.size > MAX_USER_NOTE_FILE_BYTES) {
+    throw new Error(`User note file is too large: ${stat.size} bytes exceeds ${MAX_USER_NOTE_FILE_BYTES}.`);
+  }
+  return fs.readFileSync(resolvedFile, "utf8");
+}
+
+function resolveUserNote(cwd, options = {}, positionals = []) {
+  const parts = [];
+  pushNonEmptyNotePart(parts, positionals.join(" ").trim());
+  pushNonEmptyNotePart(parts, options["user-note"]);
+  pushNonEmptyNotePart(parts, readUserNoteFile(cwd, options["user-note-file"]));
+  return parts.length ? parts.join("\n\n") : undefined;
 }
 
 function sleep(ms) {
@@ -760,9 +820,9 @@ async function handleReview(argv) {
   });
 }
 
-async function handleSessionReview(argv) {
-  const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "model", "source"],
+async function handleSessionReview(argv, defaults = {}) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "model", "source", "user-note", "user-note-file"],
     booleanOptions: ["json", "follow-up"],
     aliasMap: {
       m: "model"
@@ -771,14 +831,16 @@ async function handleSessionReview(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  const followUp = Boolean(defaults.followUp || options["follow-up"]);
+  const userNote = resolveUserNote(cwd, options, positionals);
   const job = createCompanionJob({
-    prefix: "session-review",
+    prefix: followUp ? "session-review-follow-up" : "session-review",
     kind: "session-review",
     kindLabel: "session-review",
-    title: "Codex Session Review",
+    title: followUp ? "Codex Session Follow-up Review" : "Codex Session Review",
     workspaceRoot,
     jobClass: "review",
-    summary: options["follow-up"] ? "Follow-up review of the Claude session" : "Review current Claude session"
+    summary: followUp ? "Follow-up review of the Claude session" : "Review current Claude session"
   });
 
   await runForegroundCommand(
@@ -788,12 +850,17 @@ async function handleSessionReview(argv) {
         cwd,
         source: options.source,
         model: options.model,
-        followUp: Boolean(options["follow-up"]),
+        followUp,
+        userNote,
         jobId: job.id,
         onProgress: progress
       }),
     { json: options.json }
   );
+}
+
+async function handleSessionReviewFollowUp(argv) {
+  return handleSessionReview(argv, { followUp: true });
 }
 
 async function handleTask(argv) {
@@ -1079,6 +1146,9 @@ async function main() {
       break;
     case "session-review":
       await handleSessionReview(argv);
+      break;
+    case "session-review-follow-up":
+      await handleSessionReviewFollowUp(argv);
       break;
     case "task":
       await handleTask(argv);

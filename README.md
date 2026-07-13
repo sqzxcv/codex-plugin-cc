@@ -1,9 +1,12 @@
-# Codex plugin for Claude Code
+# Codex plugin for Claude Code with session review
 
 Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
 
-This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
-they already have.
+This is an unofficial fork of OpenAI's Codex plugin for Claude Code. It keeps the upstream
+delegation and code-review workflows and adds review of the current Claude Code session.
+
+> [!IMPORTANT]
+> This fork and the official `codex` plugin expose the same `/codex:*` command namespace. They must not be enabled at the same time. Disable or uninstall the official plugin before installing this fork.
 
 <video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
 
@@ -19,19 +22,23 @@ they already have.
 - **ChatGPT subscription (incl. Free) or OpenAI API key.**
   - Usage will contribute to your Codex usage limits. [Learn more](https://developers.openai.com/codex/pricing).
 - **Node.js 18.18 or later**
+- **Git**
+
+Windows support is experimental until the complete plugin workflow has been exercised in native
+Windows CI and a real Claude Code session. Git for Windows or WSL2 is recommended.
 
 ## Install
 
 Add the marketplace in Claude Code:
 
 ```bash
-/plugin marketplace add openai/codex-plugin-cc
+/plugin marketplace add sqzxcv/codex-plugin-cc
 ```
 
 Install the plugin:
 
 ```bash
-/plugin install codex@openai-codex
+/plugin install codex@sq-codex
 ```
 
 Reload plugins:
@@ -134,10 +141,13 @@ The main command is interactive: it shows Codex's review first, then asks whethe
 /codex:session-review
 /codex:session-review-user
 /codex:session-review-claude
+/codex:session-review-follow-up
 /codex:session-review-loop
 ```
 
-Codex itself stays read-only. If Claude handles findings, the Codex review is shown to the user first, and Claude must classify each finding as `修复` or `有异议` before making changes or disputing the finding. Follow-up reviews focus on transcript entries and git changes added after the previous session review.
+Codex itself stays read-only. If Claude handles findings, the Codex review is shown to the user first, and Claude must classify each finding as `修复` or `有异议` before making changes or disputing the finding. A normal `/codex:session-review` run reviews the full available session; `/codex:session-review-follow-up` focuses on transcript entries and git changes added after the previous session review.
+
+Put supplemental review instructions directly after `/codex:session-review` or `/codex:session-review-follow-up`; the plugin treats trailing text as review context.
 
 If the plugin cannot identify the current Claude transcript automatically, pass `--source <path-to-claude-jsonl>`.
 

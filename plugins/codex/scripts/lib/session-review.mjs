@@ -7,22 +7,40 @@ import { getRepoRoot } from "./git.mjs";
 import { runCommandChecked } from "./process.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 
-const MAX_SECTION_CHARS = 120000;
-const MAX_UNTRACKED_BYTES = 24 * 1024;
+const MAX_SESSION_CONTEXT_CHARS = 120000;
+const MAX_TRANSCRIPT_CHARS = 36000;
+const MAX_GIT_CONTEXT_CHARS = 36000;
+const MAX_TOOL_ACTIVITY_CHARS = 12000;
+const MAX_PLANS_CHARS = 8000;
+const MAX_EDITS_CHARS = 10000;
+const MAX_COMMANDS_CHARS = 10000;
+const MAX_PARSE_ERRORS_CHARS = 4000;
+const MAX_USER_NOTE_CHARS = 32768;
+const MAX_UNTRACKED_BYTES = 8 * 1024;
 const EDIT_TOOL_NAMES = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 const PLAN_TOOL_NAMES = new Set(["TodoWrite"]);
 const COMMAND_TOOL_NAMES = new Set(["Bash"]);
 
-function truncate(text, limit = MAX_SECTION_CHARS) {
+function truncate(text, limit) {
   const value = String(text ?? "");
+  if (!Number.isInteger(limit) || limit <= 0) {
+    return value;
+  }
   if (value.length <= limit) {
     return value;
   }
-  return `${value.slice(0, limit)}\n\n[truncated ${value.length - limit} character(s)]`;
+  if (limit < 256) {
+    return `${value.slice(0, limit)}\n\n[truncated ${value.length - limit} character(s)]`;
+  }
+  const marker = `\n\n[truncated ${value.length - limit} character(s)]\n\n`;
+  const remaining = Math.max(0, limit - marker.length);
+  const headLength = Math.ceil(remaining * 0.6);
+  const tailLength = Math.floor(remaining * 0.4);
+  return `${value.slice(0, headLength)}${marker}${value.slice(value.length - tailLength)}`;
 }
 
-function formatSection(title, body) {
-  const value = String(body ?? "").trim();
+function formatSection(title, body, limit) {
+  const value = truncate(String(body ?? "").trim(), limit);
   return [`## ${title}`, "", value || "(none)", ""].join("\n");
 }
 
@@ -214,11 +232,11 @@ function summarizeEntries(entries, repoRoot) {
   });
 
   return {
-    transcript: truncate(lines.join("\n\n")),
-    plans: plans.join("\n"),
-    edits: edits.join("\n"),
-    commands: commands.join("\n"),
-    toolActivity: toolActivity.join("\n")
+    transcript: truncate(lines.join("\n\n"), MAX_TRANSCRIPT_CHARS),
+    plans: truncate(plans.join("\n"), MAX_PLANS_CHARS),
+    edits: truncate(edits.join("\n"), MAX_EDITS_CHARS),
+    commands: truncate(commands.join("\n"), MAX_COMMANDS_CHARS),
+    toolActivity: truncate(toolActivity.join("\n"), MAX_TOOL_ACTIVITY_CHARS)
   };
 }
 
@@ -262,7 +280,7 @@ function collectGitContext(repoRoot) {
 
   return {
     status,
-    content: truncate(content),
+    content: truncate(content, MAX_GIT_CONTEXT_CHARS),
     diffHash: sha256(content),
     untrackedCount: untracked.length
   };
@@ -298,6 +316,11 @@ export function collectSessionReviewContext(cwd, options = {}) {
   const { sourcePath, buffer } = readTranscriptBuffer(cwd, options);
   const previousReview = options.previousReview ?? null;
   const requestedFollowUp = Boolean(options.followUp);
+  const rawUserNote = options.userNote == null ? "" : String(options.userNote);
+  if (rawUserNote.length > MAX_USER_NOTE_CHARS) {
+    throw new Error(`User supplemental review input is too large: ${rawUserNote.length} characters exceeds ${MAX_USER_NOTE_CHARS}.`);
+  }
+  const userNote = rawUserNote.trim() ? rawUserNote : "";
   if (requestedFollowUp && !previousReview) {
     throw new Error("No previous session-review checkpoint was found for this Claude session.");
   }
@@ -317,9 +340,11 @@ export function collectSessionReviewContext(cwd, options = {}) {
   const iteration = requestedFollowUp ? Number(previousReview?.iteration ?? 1) + 1 : 1;
   const reviewId = `session-review-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const transcriptTitle = requestedFollowUp ? "New session transcript since previous review" : "Full session transcript";
+  const userNoteSection = userNote ? formatSection("User Supplemental Review Input", userNote) : "";
 
-  const sessionContext = [
+  const sessionContext = truncate([
     formatSection("Review Phase", phase),
+    userNoteSection,
     formatSection(transcriptTitle, summaries.transcript),
     formatSection("Plans and Todos", summaries.plans),
     formatSection("Claude Tool Activity", summaries.toolActivity),
@@ -327,7 +352,7 @@ export function collectSessionReviewContext(cwd, options = {}) {
     formatSection("Claude Command Activity", summaries.commands),
     formatSection("Transcript Parse Errors", formatParseErrors(selectedParseErrors)),
     formatSection(requestedFollowUp ? "Latest Git Status" : "Current Git Status", git.content)
-  ].join("\n");
+  ].join("\n"), MAX_SESSION_CONTEXT_CHARS);
 
   return {
     cwd: repoRoot,
@@ -337,6 +362,7 @@ export function collectSessionReviewContext(cwd, options = {}) {
     phase,
     iteration,
     reviewId,
+    userNote,
     transcriptOffset: buffer.length,
     transcript: {
       totalEntries: parsedFull.entries.length,

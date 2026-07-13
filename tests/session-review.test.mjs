@@ -201,6 +201,334 @@ test("session-review follow-up focuses on transcript entries added after the pre
   assert.match(fakeState.lastTurnStart.prompt, /Latest Git Status/);
 });
 
+test("session-review-follow-up command focuses on transcript entries after the previous review", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-follow-up-command";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const first = run("node", [SCRIPT, "session-review", "--json"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  fs.appendFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "assistant", cwd: repo, message: { role: "assistant", content: "Only this entry is new." } })}\n`,
+    "utf8"
+  );
+
+  const followUp = run("node", [SCRIPT, "session-review-follow-up", "--json"], { cwd: repo, env });
+
+  assert.equal(followUp.status, 0, followUp.stderr);
+  const payload = JSON.parse(followUp.stdout);
+  assert.equal(payload.context.phase, "follow-up");
+  assert.equal(payload.context.iteration, 2);
+  assert.equal(payload.context.transcript.newEntries, 1);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /New session transcript since previous review/i);
+  assert.match(fakeState.lastTurnStart.prompt, /Only this entry is new\./);
+  assert.doesNotMatch(fakeState.lastTurnStart.prompt, /Initial request\./);
+});
+
+test("session-review rerun without follow-up reviews the full session and includes user notes", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-rerun";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const first = run("node", [SCRIPT, "session-review", "--json"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  fs.appendFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "assistant", cwd: repo, message: { role: "assistant", content: "Later Claude update." } })}\n`,
+    "utf8"
+  );
+
+  const rerun = run("node", [SCRIPT, "session-review", "--json", "--user-note", "Please also check the skipped mobile case."], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(rerun.status, 0, rerun.stderr);
+  const payload = JSON.parse(rerun.stdout);
+  assert.equal(payload.context.phase, "initial");
+  assert.equal(payload.context.iteration, 1);
+  assert.equal(payload.context.transcript.newEntries, 2);
+  assert.equal(payload.context.userNote, "Please also check the skipped mobile case.");
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /Full session transcript/);
+  assert.match(fakeState.lastTurnStart.prompt, /Initial request\./);
+  assert.match(fakeState.lastTurnStart.prompt, /Later Claude update\./);
+  assert.match(fakeState.lastTurnStart.prompt, /Please also check the skipped mobile case\./);
+});
+
+test("session-review treats trailing text as user note", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-trailing-note";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const result = run("node", [SCRIPT, "session-review", "--json Focus on concurrent session pollution."], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.context.userNote, "Focus on concurrent session pollution.");
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /User Supplemental Review Input/);
+  assert.match(fakeState.lastTurnStart.prompt, /Focus on concurrent session pollution\./);
+});
+
+test("session-review-follow-up treats trailing text as user note", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-follow-up-trailing-note";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const first = run("node", [SCRIPT, "session-review", "--json"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  fs.appendFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "assistant", cwd: repo, message: { role: "assistant", content: "Only this entry is new." } })}\n`,
+    "utf8"
+  );
+
+  const followUp = run("node", [SCRIPT, "session-review-follow-up", "--json Verify the disputed fix only."], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(followUp.status, 0, followUp.stderr);
+  const payload = JSON.parse(followUp.stdout);
+  assert.equal(payload.context.phase, "follow-up");
+  assert.equal(payload.context.userNote, "Verify the disputed fix only.");
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /New session transcript since previous review/i);
+  assert.match(fakeState.lastTurnStart.prompt, /User Supplemental Review Input/);
+  assert.match(fakeState.lastTurnStart.prompt, /Verify the disputed fix only\./);
+});
+
+test("session-review reads complete supplemental notes from a file", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-note-file";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  const notePath = path.join(home, "review-note.txt");
+  const fileNote = [
+    "Line one with spaces.",
+    "--looks-like-a-flag should stay in the note.",
+    "\"quoted text\" and $(echo should-not-run)",
+    "Final line."
+  ].join("\n");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  fs.writeFileSync(notePath, fileNote, "utf8");
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const result = run("node", [SCRIPT, "session-review", `--json trailing context --user-note-file "${notePath}"`], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.context.userNote, `trailing context\n\n${fileNote}`);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /User Supplemental Review Input/);
+  assert.match(fakeState.lastTurnStart.prompt, /trailing context/);
+  assert.match(fakeState.lastTurnStart.prompt, /--looks-like-a-flag should stay in the note\./);
+  assert.match(fakeState.lastTurnStart.prompt, /\$\(echo should-not-run\)/);
+  assert.match(fakeState.lastTurnStart.prompt, /Final line\./);
+});
+
+test("session-review rejects oversized supplemental note files", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-note-file-large";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  const notePath = path.join(home, "large-review-note.txt");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Initial request." } })}\n`,
+    "utf8"
+  );
+  fs.writeFileSync(notePath, "x".repeat(256 * 1024 + 1), "utf8");
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const result = run("node", [SCRIPT, "session-review", `--json --user-note-file "${notePath}"`], {
+    cwd: repo,
+    env
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /User note file is too large/);
+});
+
+test("session-review keeps large transcript and diff prompts within a bounded review budget", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-session-review-large-context";
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installSessionReviewFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "large.txt"), "base\n");
+  run("git", ["add", "large.txt"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "large.txt"), `${"changed line\n".repeat(16000)}\n`);
+  const entries = Array.from({ length: 140 }, (_, index) => {
+    return {
+      type: index === 0 ? "user" : "assistant",
+      cwd: repo,
+      message: {
+        role: index === 0 ? "user" : "assistant",
+        content: `large transcript entry ${index} ${"x".repeat(1800)}`
+      }
+    };
+  });
+  fs.writeFileSync(sourcePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_SESSION_ID: sessionId,
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const result = run("node", [SCRIPT, "session-review", "--json"], { cwd: repo, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.ok(fakeState.lastTurnStart.prompt.length <= 130000, `prompt length ${fakeState.lastTurnStart.prompt.length}`);
+  assert.match(fakeState.lastTurnStart.prompt, /truncated/);
+  assert.match(fakeState.lastTurnStart.prompt, /Current Git Status/);
+});
+
 test("session-review follow-up can use --source when session environment variables are missing", () => {
   const home = makeTempDir();
   const repo = path.join(home, "repo");

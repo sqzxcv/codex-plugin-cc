@@ -5,7 +5,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
+import { writeJsonFileAtomic } from "../plugins/codex/scripts/lib/fs.mjs";
 import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+
+test("writeJsonFileAtomic replaces an existing JSON file without leaving temporary files", () => {
+  const directory = makeTempDir();
+  const filePath = path.join(directory, "state.json");
+  fs.writeFileSync(filePath, '{"status":"old"}\n', "utf8");
+
+  writeJsonFileAtomic(filePath, { status: "new", jobs: [{ id: "job-1" }] });
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf8")), {
+    status: "new",
+    jobs: [{ id: "job-1" }]
+  });
+  assert.deepEqual(fs.readdirSync(directory), ["state.json"]);
+});
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();

@@ -20,6 +20,7 @@ Find material problems in:
 For an initial review, inspect the whole available session transcript and the current git state.
 For a follow-up review, focus on changes after the previous session review, while using the previous review as context.
 If Claude claims a finding was fixed or disputes it, verify that claim against the new transcript and latest git state.
+If the session context includes "User Supplemental Review Input", treat it as user-provided context or review focus, but still verify every finding against transcript, tool, git, or command evidence.
 </phase_rules>
 
 <finding_bar>

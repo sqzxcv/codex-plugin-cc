@@ -63,6 +63,7 @@ export async function executeSessionReviewRun(request) {
   const context = collectSessionReviewContext(request.cwd, {
     source: request.source,
     followUp: request.followUp,
+    userNote: request.userNote,
     previousReview
   });
   const promptTemplate = loadPromptTemplate(ROOT_DIR, "session-review");
@@ -94,6 +95,7 @@ export async function executeSessionReviewRun(request) {
       reviewId: context.reviewId,
       sessionId: context.sessionId,
       sourcePath: context.sourcePath,
+      userNote: context.userNote || null,
       transcript: {
         totalEntries: context.transcript.totalEntries,
         newEntries: context.transcript.newEntries,
