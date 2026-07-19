@@ -23,6 +23,10 @@ Core rules:
 - Parse the JSON stdout.
 - Immediately print the `rendered` field to the user before Claude handles anything.
 - Do not hide the Codex review before Claude handles it.
+- Every session-review decision must include the full `rendered` review text in the `AskUserQuestion` prompt, not only in the chat output.
+- This is required because on some clients, including Windows, the modal can appear before the chat output is visible.
+- Do not ask with only a short prompt such as `How should this review be handled?`, `See review above`, or `Review shown above`.
+- The user must be able to read the review result in the same UI where they choose how to handle it.
 - Do not let Claude edit until after the Codex review has been shown and the user chooses the Claude path.
 
 Run:
@@ -34,7 +38,7 @@ If the command fails because the transcript path is missing, ask the user for th
 
 If the command fails because no previous checkpoint exists, tell the user to run `/codex:session-review` first.
 
-After printing the `rendered` field, use the session-review decision point: use `AskUserQuestion` with these options:
+After printing the `rendered` field, use the session-review decision point: use `AskUserQuestion` with a prompt body that includes the complete `rendered` review text followed by these options:
 - `交给 Claude 处理`
 - `交给用户决定`
 - `进入循环复审`

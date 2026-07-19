@@ -22,6 +22,10 @@ Core rules:
 - Immediately print the `rendered` field to the user before Claude handles any finding.
 - Do not hide the Codex review before Claude handles it.
 - Print every follow-up `rendered` field before Claude handles the next iteration.
+- Every session-review decision must include the full `rendered` review text in the `AskUserQuestion` prompt, not only in the chat output.
+- This is required because on some clients, including Windows, the modal can appear before the chat output is visible.
+- Do not ask with only a short prompt such as `How should this review be handled?`, `See review above`, or `Review shown above`.
+- The user must be able to read the review result in the same UI where they choose how to handle it.
 - The default maximum is 3 review iterations.
 
 Run:
@@ -31,7 +35,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" session-review "--json 
 
 If the command fails because the transcript path is missing, ask the user for the Claude JSONL path, update the effective arguments, and rerun with `--source <path>`.
 
-After printing the initial `rendered` field, use the session-review decision point: use `AskUserQuestion` with these options:
+After printing the initial `rendered` field, use the session-review decision point: use `AskUserQuestion` with a prompt body that includes the complete `rendered` review text followed by these options:
 - `交给 Claude 处理`
 - `交给用户决定`
 - `进入循环复审`

@@ -28,6 +28,10 @@ test("session-review commands expose interactive review flows and show Codex out
     assert.match(source, /do not rewrite trailing text to `--user-note`/i);
     assert.doesNotMatch(source, /--follow-up/);
     assert.match(source, /After printing .*`rendered` field.*AskUserQuestion/is);
+    assert.match(source, /include the full `rendered` review text in the `AskUserQuestion` prompt/i);
+    assert.match(source, /modal can appear before the chat output is visible/i);
+    assert.match(source, /Do not ask with only a short prompt/i);
+    assert.match(source, /same UI where they choose/i);
     assert.match(source, /交给 Claude 处理/);
     assert.match(source, /交给用户决定/);
     assert.match(source, /用户补充信息后重新让 Codex review/);
